@@ -1,16 +1,32 @@
-use std::path::Path;
+use std::{path::Path};
+use arrayvec::ArrayVec;
 use rustop::opts;
 use walkdir::WalkDir;
 use yara::*;
 
+const VERSION: &str = "0.0.1-alpha";
+
 const RULES: &str = r#"
     rule test_rule {
+      meta:
+        score = 60
       strings:
         $rust = "License" nocase
       condition:
         $rust
     }
 "#;
+
+#[derive(Debug)]
+struct FileMatch {
+    message: String,
+    score: u8,
+}
+
+struct YaraMatch {
+    rulename: String,
+    score: u8,
+}
 
 // initialize the rule files
 fn initialize_rules(rules_string: &str) -> Rules {
@@ -25,16 +41,23 @@ fn initialize_rules(rules_string: &str) -> Rules {
 }
 
 // scan a file
-fn scan_file(rules: &Rules, file: &Path) { //-> Vec<yara::Rule<'_>> {
+fn scan_file(rules: &Rules, file: &Path, debug: bool) -> ArrayVec<YaraMatch, 100> {
     let results = rules
     .scan_file(file, 10);
     //println!("{:?}", results);
+    let mut yara_matches = ArrayVec::<YaraMatch, 100>::new();
     for _match in results.iter() {
         if _match.len() > 0 {
-            println!("MATCH FOUND: {:?}", _match);
+            if debug { println!("MATCH FOUND: {:?} LEN: {}", _match, _match.len()); };
+            if !yara_matches.is_full() {
+                yara_matches.insert(
+                    yara_matches.len(), 
+                    YaraMatch{rulename: _match[0].identifier.to_string(), score: 60}
+                );
+            }
         }
     }
-    // return results;
+    return yara_matches;
 }
 
 // Welcome message
@@ -45,7 +68,7 @@ fn welcome_message() {
     println!("   / /__/ /_/ / ,< _/ /  _\\ \\/ __/ _ `/ _ \\/ _ \\/ -_) __/           ");
     println!("  /____/\\____/_/|_/___/ /___/\\__/\\_,_/_//_/_//_/\\__/_/              ");
     println!("                                                                        ");
-    println!("  Version 2.0.0 alpha (Rust)                                            ");
+    println!("  Version {} Rust)                                            ", VERSION);
     println!("  by Florian Roth 2022                                                  ");
     println!("------------------------------------------------------------------------");                      
 }
@@ -73,9 +96,33 @@ fn main() {
 
     // Walk the file system
     for entry in WalkDir::new(target_folder).into_iter().filter_map(|e| e.ok()) {
+        // Debug output : show every file that gets scanned
         if args.debug {
             println!("Scanning file {}", entry.path().display());
         }
-        scan_file(&compiled_rules, entry.path());
+        // ------------------------------------------------------------
+        // Matches (all types)
+        let mut sample_matches = ArrayVec::<FileMatch, 100>::new();
+        // ------------------------------------------------------------
+        // YARA scanning
+        let yara_matches = 
+            scan_file(&compiled_rules, entry.path(), args.debug);
+        for ymatch in yara_matches.iter() {
+            if !sample_matches.is_full() {
+                let match_message: String = format!("YARA match with rule {}", ymatch.rulename);
+                sample_matches.insert(
+                    sample_matches.len(), 
+                    FileMatch{message: match_message, score: ymatch.score}
+                );
+            }
+        }
+
+        // Scan Results
+        if sample_matches.len() > 0 {
+            // Compose all reasons
+    
+            // Print line
+            println!("File match found FILE: {} RESONS: {:?}", entry.path().display(), sample_matches);
+        }
     }
 }
