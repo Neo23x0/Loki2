@@ -2,9 +2,10 @@ use std::{path::Path};
 use arrayvec::ArrayVec;
 use rustop::opts;
 use walkdir::WalkDir;
+use simple_logger::SimpleLogger;
 use yara::*;
 
-const VERSION: &str = "0.0.1-alpha";
+const VERSION: &str = "0.2.0-alpha";
 
 const RULES: &str = r#"
     rule test_rule {
@@ -68,7 +69,7 @@ fn welcome_message() {
     println!("   / /__/ /_/ / ,< _/ /  _\\ \\/ __/ _ `/ _ \\/ _ \\/ -_) __/           ");
     println!("  /____/\\____/_/|_/___/ /___/\\__/\\_,_/_//_/_//_/\\__/_/              ");
     println!("                                                                        ");
-    println!("  Version {} Rust)                                            ", VERSION);
+    println!("  Version {} (Rust)                                            ", VERSION);
     println!("  by Florian Roth 2022                                                  ");
     println!("------------------------------------------------------------------------");                      
 }
@@ -77,6 +78,11 @@ fn main() {
 
     // Show welcome message
     welcome_message();
+
+    // Logger
+    
+    simple_logger::SimpleLogger::new().env().init().unwrap();
+    log::warn!("This is an example message.");
 
     // Parsing command line flags
     let (args, _rest) = opts! {
@@ -119,10 +125,14 @@ fn main() {
 
         // Scan Results
         if sample_matches.len() > 0 {
-            // Compose all reasons
-    
+            // Calculate a total score
+            let mut total_score: u8 = 0; 
+            for sm in sample_matches.iter() {
+                total_score += sm.score;
+            }
+            
             // Print line
-            println!("File match found FILE: {} RESONS: {:?}", entry.path().display(), sample_matches);
+            log::warn!("File match found FILE: {} SCORE: {} REASONS: {:?}", entry.path().display(), total_score, sample_matches);
         }
     }
 }
