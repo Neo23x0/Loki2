@@ -12,6 +12,7 @@ use yara::*;
 
 const VERSION: &str = "2.0.0-alpha";
 
+// TODO: read rules from actual rule files instead of this static dummy rule
 const RULES: &str = r#"
     rule test_rule {
       meta:
@@ -127,6 +128,7 @@ fn scan_path (target_folder: String, compiled_rules: &Rules, debug: bool) -> () 
                 let match_message: String = format!("YARA match with rule {}", ymatch.rulename);
                 sample_matches.insert(
                     sample_matches.len(), 
+                    // TODO: get meta data in a safe way from Vec structure
                     GenMatch{message: match_message, score: ymatch.score}
                 );
             }
@@ -141,6 +143,7 @@ fn scan_path (target_folder: String, compiled_rules: &Rules, debug: bool) -> () 
             }
             
             // Print line
+            // TODO: print all matches in a nested form
             log::warn!("File match found FILE: {} SCORE: {} REASONS: {:?}", entry.path().display(), total_score, sample_matches);
         }
     }
