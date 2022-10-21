@@ -30,7 +30,7 @@ struct YaraMatch {
     score: u8,
 }
 
-// initialize the rule files
+// Initialize the rule files
 fn initialize_rules() -> Rules {
     // Composed YARA rule set 
     // we're concatenating all rules from all rule files to a single string and 
@@ -66,7 +66,7 @@ fn initialize_rules() -> Rules {
     return compiled_all_rules;
 }
 
-// compile a rule set string and check for errors
+// Compile a rule set string and check for errors
 fn compile_yara_rules(rules_string: &str) -> Result<Rules, Error> {
     let compiler = Compiler::new().unwrap();
     // Parse the rules
@@ -84,10 +84,11 @@ fn compile_yara_rules(rules_string: &str) -> Result<Rules, Error> {
         Ok(r) => r,
         Err(e) => return Err(Error::from(e)),
     };
+    // Return the compiled rule set
     return Ok(compiled_rules);
 }
 
-// Scan all process memories
+// Scan process memory of all processes
 fn scan_processes(compiled_rules: &Rules) ->() {
     // Refresh the process information
     let mut sys = System::new_all();
@@ -127,6 +128,8 @@ fn scan_processes(compiled_rules: &Rules) ->() {
 fn scan_path (target_folder: String, compiled_rules: &Rules) -> () {
     // Walk the file system
     for entry in WalkDir::new(target_folder).into_iter().filter_map(|e| e.ok()) {
+        // Skip directories
+        if entry.path().is_dir() { continue };
         // Debug output : show every file that gets scanned
         log::debug!("Scanning file {}", entry.path().display());
         // ------------------------------------------------------------
@@ -146,7 +149,6 @@ fn scan_path (target_folder: String, compiled_rules: &Rules) -> () {
                 );
             }
         }
-
         // Scan Results
         if sample_matches.len() > 0 {
             // Calculate a total score
@@ -154,7 +156,6 @@ fn scan_path (target_folder: String, compiled_rules: &Rules) -> () {
             for sm in sample_matches.iter() {
                 total_score += sm.score;
             }
-            
             // Print line
             // TODO: print all matches in a nested form
             log::warn!("File match found FILE: {} SCORE: {} REASONS: {:?}", entry.path().display(), total_score, sample_matches);
@@ -166,6 +167,12 @@ fn scan_path (target_folder: String, compiled_rules: &Rules) -> () {
 fn scan_file(rules: &Rules, file: &Path) -> ArrayVec<YaraMatch, 100> {
     let results = rules
     .scan_file(file, 10);
+    match &results {
+        Ok(_) => {},
+        Err(e) => { 
+            log::error!("Cannot access file FILE: {:?} ERROR: {:?}", file, e); 
+        }
+    }
     //println!("{:?}", results);
     let mut yara_matches = ArrayVec::<YaraMatch, 100>::new();
     for _match in results.iter() {
@@ -183,7 +190,7 @@ fn scan_file(rules: &Rules, file: &Path) -> ArrayVec<YaraMatch, 100> {
 }
 
 // Evaluate platform & environment information
-fn evaluate_env() {
+fn evaluate_env() -> String {
     let mut sys = System::new_all();
     sys.refresh_all();
     // Command line arguments 
@@ -212,7 +219,8 @@ fn evaluate_env() {
             disk.is_removable(),
         );
     }
-
+    // Return the OS type
+    return env::consts::OS.to_string();
 }
 
 // Welcome message
@@ -249,12 +257,15 @@ fn main() {
     log::info!("LOKI scan started VERSION: {}", VERSION);
 
     // Print platform & environment information
-    evaluate_env();
+    let os_type = evaluate_env();
 
-    // Default values
-    let mut target_folder: String = '.'.to_string(); 
-    if let Some(t_folder) = args.folder {
-        target_folder = t_folder;
+    // Set some default values
+    // default target folder
+    let mut target_folder: String = '/'.to_string(); 
+    if os_type == "windows" { target_folder = "C:\\".to_string(); }
+    // if target folder has ben set via command line flag
+    if let Some(args_target_folder) = args.folder {
+        target_folder = args_target_folder;
     }
     
     // Initialize the rules
