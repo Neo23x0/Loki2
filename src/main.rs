@@ -14,19 +14,6 @@ use yara::*;
 
 const VERSION: &str = "2.0.0-alpha";
 
-// TODO: read rules from actual rule files instead of this static dummy rule
-const RULES: &str = r#"
-    rule test_rule {
-      meta:
-        score = 60
-      strings:
-        $x1 = "netcat" fullword ascii
-        $x2 = "License" fullword ascii
-      condition:
-        1 of them
-    }
-"#;
-
 #[derive(Debug)]
 struct GenMatch {
     message: String,
