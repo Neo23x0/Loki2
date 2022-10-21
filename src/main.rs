@@ -1,6 +1,8 @@
 use std::env;
 use std::str;
+use std::fs;
 use std::{path::Path};
+use log::Level;
 use sysinfo::CpuExt;
 use sysinfo::PidExt;
 use sysinfo::{ProcessExt, System, SystemExt, Disk, DiskExt};
@@ -37,7 +39,34 @@ struct YaraMatch {
 }
 
 // initialize the rule files
-fn initialize_rules(rules_string: &str) -> Rules {
+fn initialize_rules() -> Rules {
+    // Composed YARA rule set 
+    // we're concatenating all rules from all rule files to a single string and 
+    // compile them all together into a single big rule set for performance purposes
+    let mut all_rules = String::new();
+    // Reading the signature folder
+    let files = fs::read_dir("./signatures/yara").unwrap();
+    // Filter 
+    let filtered_files = files
+        .filter_map(Result::ok)
+        .filter(|d| if let Some(e) = d.path().extension() { e == "yar" } else { false })
+        .into_iter();
+    // Test compile each rule
+    for file in filtered_files {
+        log::debug!("Reading YARA rule file {} ...", file.path().to_str().unwrap());
+        let rules_string = fs::read_to_string(file.path()).expect("Unable to read YARA rule file (use --debug for more information)");
+        let compiled_file = compile_yara_rules(&rules_string);
+        log::debug!("Successfully compiled rule file {:?} - adding it to the big set", file.path().to_str().unwrap());
+        // adding content of that file to the whole rules string
+        all_rules += &rules_string;
+    }
+    // Compile the full set and return the compiled rules
+    let compiled_all_rules = compile_yara_rules(&all_rules);
+    return compiled_all_rules;
+}
+
+// compile a rule file to check for errors
+fn compile_yara_rules(rules_string: &str) -> Rules {
     let compiler = Compiler::new().unwrap();
     let compiler = compiler
         .add_rules_str(rules_string)
@@ -48,36 +77,14 @@ fn initialize_rules(rules_string: &str) -> Rules {
     return compiled_rules;
 }
 
-// scan a file
-fn scan_file(rules: &Rules, file: &Path, debug: bool) -> ArrayVec<YaraMatch, 100> {
-    let results = rules
-    .scan_file(file, 10);
-    //println!("{:?}", results);
-    let mut yara_matches = ArrayVec::<YaraMatch, 100>::new();
-    for _match in results.iter() {
-        if _match.len() > 0 {
-            if debug { println!("MATCH FOUND: {:?} LEN: {}", _match, _match.len()); };
-            if !yara_matches.is_full() {
-                yara_matches.insert(
-                    yara_matches.len(), 
-                    YaraMatch{rulename: _match[0].identifier.to_string(), score: 60}
-                );
-            }
-        }
-    }
-    return yara_matches;
-}
-
 // Scan all process memories
-fn scan_processes(compiled_rules: &Rules, debug: bool) ->() {
+fn scan_processes(compiled_rules: &Rules) ->() {
     // Refresh the process information
     let mut sys = System::new_all();
     sys.refresh_all();
     for (pid, process) in sys.processes() {
         // Debug output : show every file that gets scanned
-        if debug {
-            println!("Scanning process PID: {} NAME: {}", pid, process.name());
-        }
+        log::debug!("Scanning process PID: {} NAME: {}", pid, process.name());
         // ------------------------------------------------------------
         // Matches (all types)
         let mut proc_matches = ArrayVec::<GenMatch, 100>::new();
@@ -85,9 +92,7 @@ fn scan_processes(compiled_rules: &Rules, debug: bool) ->() {
         // YARA scanning
         let yara_matches = 
             compiled_rules.scan_process(pid.as_u32(), 30);
-        if debug {
-            println!("Scan result: {:?}", yara_matches);
-        }
+        log::debug!("Scan result: {:?}", yara_matches);
         // TODO: better scan error handling (debug messages)
         for ymatch in yara_matches.unwrap_or_default().iter() {
             if !proc_matches.is_full() {
@@ -109,20 +114,18 @@ fn scan_processes(compiled_rules: &Rules, debug: bool) ->() {
 }
 
 // Scan a given file system path
-fn scan_path (target_folder: String, compiled_rules: &Rules, debug: bool) -> () {
+fn scan_path (target_folder: String, compiled_rules: &Rules) -> () {
     // Walk the file system
     for entry in WalkDir::new(target_folder).into_iter().filter_map(|e| e.ok()) {
         // Debug output : show every file that gets scanned
-        if debug {
-            println!("Scanning file {}", entry.path().display());
-        }
+        log::debug!("Scanning file {}", entry.path().display());
         // ------------------------------------------------------------
         // Matches (all types)
         let mut sample_matches = ArrayVec::<GenMatch, 100>::new();
         // ------------------------------------------------------------
         // YARA scanning
         let yara_matches = 
-            scan_file(&compiled_rules, entry.path(), debug);
+            scan_file(&compiled_rules, entry.path());
         for ymatch in yara_matches.iter() {
             if !sample_matches.is_full() {
                 let match_message: String = format!("YARA match with rule {}", ymatch.rulename);
@@ -147,6 +150,26 @@ fn scan_path (target_folder: String, compiled_rules: &Rules, debug: bool) -> () 
             log::warn!("File match found FILE: {} SCORE: {} REASONS: {:?}", entry.path().display(), total_score, sample_matches);
         }
     }
+}
+
+// scan a file
+fn scan_file(rules: &Rules, file: &Path) -> ArrayVec<YaraMatch, 100> {
+    let results = rules
+    .scan_file(file, 10);
+    //println!("{:?}", results);
+    let mut yara_matches = ArrayVec::<YaraMatch, 100>::new();
+    for _match in results.iter() {
+        if _match.len() > 0 {
+            log::debug!("MATCH FOUND: {:?} LEN: {}", _match, _match.len());
+            if !yara_matches.is_full() {
+                yara_matches.insert(
+                    yara_matches.len(), 
+                    YaraMatch{rulename: _match[0].identifier.to_string(), score: 60}
+                );
+            }
+        }
+    }
+    return yara_matches;
 }
 
 // Evaluate platform & environment information
@@ -192,7 +215,8 @@ fn welcome_message() {
     println!("  Simple IOC and YARA Scanner                                           ");
     println!(" ");
     println!("  Version {} (Rust)                                            ", VERSION);
-    println!("  by Florian Roth 2022                                                  ");
+    println!("  Florian Roth 2022                                                     ");
+    println!(" ");
     println!("------------------------------------------------------------------------");                      
 }
 
@@ -201,19 +225,21 @@ fn main() {
     // Show welcome message
     welcome_message();
 
-    // Logger
-    simple_logger::SimpleLogger::new().env().init().unwrap();
-    log::info!("LOKI scan started VERSION: {}", VERSION);
-
-    // Print platform & environment information
-    evaluate_env();
-
     // Parsing command line flags
     let (args, _rest) = opts! {
         synopsis "LOKI YARA and IOC Scanner";
         opt debug:bool, desc:"Show debugging information";
         opt folder:Option<String>, desc:"Folder to scan"; // an optional (positional) parameter
     }.parse_or_exit();
+
+    // Logger
+    let mut log_level: Level = Level::Info;  // default
+    if args.debug { log_level = Level::Debug; }  // set to debug level
+    simple_logger::init_with_level(log_level).unwrap();
+    log::info!("LOKI scan started VERSION: {}", VERSION);
+
+    // Print platform & environment information
+    evaluate_env();
 
     // Default values
     let mut target_folder: String = '.'.to_string(); 
@@ -222,14 +248,15 @@ fn main() {
     }
     
     // Initialize the rules
-    let compiled_rules = initialize_rules(RULES);
+    log::info!("Initializing YARA rules ...");
+    let compiled_rules = initialize_rules();
 
     // Process scan
     log::info!("Scanning running processes ... ");
-    scan_processes(&compiled_rules, args.debug);
+    scan_processes(&compiled_rules);
 
     // File system scan
     log::info!("Scanning local file system ... ");
-    scan_path(target_folder, &compiled_rules, args.debug);
+    scan_path(target_folder, &compiled_rules);
 
 }

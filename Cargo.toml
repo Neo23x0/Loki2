@@ -14,3 +14,4 @@ arrayvec = "*"
 simple_logger = "3.0.0"
 sysinfo = "*"
 human_bytes = "*"
+#termcolor = "*"  # unneeded yet
