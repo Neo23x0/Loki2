@@ -104,6 +104,12 @@ fn scan_processes(compiled_rules: &Rules) ->() {
         let yara_matches = 
             compiled_rules.scan_process(pid.as_u32(), 30);
         log::debug!("Scan result: {:?}", yara_matches);
+        match &yara_matches {
+            Ok(_) => {},
+            Err(e) => {
+                log::debug!("Error while scanning process memory PROCESS: {} ERROR: {:?}", process.name(), e);
+            }
+        }
         // TODO: better scan error handling (debug messages)
         for ymatch in yara_matches.unwrap_or_default().iter() {
             if !proc_matches.is_full() {
@@ -170,7 +176,7 @@ fn scan_file(rules: &Rules, file: &Path) -> ArrayVec<YaraMatch, 100> {
     match &results {
         Ok(_) => {},
         Err(e) => { 
-            log::error!("Cannot access file FILE: {:?} ERROR: {:?}", file, e); 
+            log::debug!("Cannot access file FILE: {:?} ERROR: {:?}", file, e); 
         }
     }
     //println!("{:?}", results);
