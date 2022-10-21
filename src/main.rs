@@ -12,6 +12,11 @@ use walkdir::WalkDir;
 use human_bytes::human_bytes;
 use yara::*;
 
+// General TODOS
+// - better error handling
+// - putting all modules in an array and looping over that list instead of a fixed sequence
+// - restructuring project to multiple files
+
 const VERSION: &str = "2.0.0-alpha";
 
 #[derive(Debug)]
@@ -41,27 +46,45 @@ fn initialize_rules() -> Rules {
     // Test compile each rule
     for file in filtered_files {
         log::debug!("Reading YARA rule file {} ...", file.path().to_str().unwrap());
+        // Read the rule file
         let rules_string = fs::read_to_string(file.path()).expect("Unable to read YARA rule file (use --debug for more information)");
-        let compiled_file = compile_yara_rules(&rules_string);
-        log::debug!("Successfully compiled rule file {:?} - adding it to the big set", file.path().to_str().unwrap());
-        // adding content of that file to the whole rules string
-        all_rules += &rules_string;
+        let compiled_file_result = compile_yara_rules(&rules_string);
+        match compiled_file_result {
+            Ok(_) => { 
+                log::debug!("Successfully compiled rule file {:?} - adding it to the big set", file.path().to_str().unwrap());
+                // adding content of that file to the whole rules string
+                all_rules += &rules_string;
+            },
+            Err(e) => {
+                log::error!("Cannot compile rule file {:?}. Ignoring file. ERROR: {:?}", file.path().to_str().unwrap(), e)                
+            }
+        };
     }
     // Compile the full set and return the compiled rules
-    let compiled_all_rules = compile_yara_rules(&all_rules);
+    let compiled_all_rules = compile_yara_rules(&all_rules)
+        .expect("Error parsing the compsed rule set");
     return compiled_all_rules;
 }
 
-// compile a rule file to check for errors
-fn compile_yara_rules(rules_string: &str) -> Rules {
+// compile a rule set string and check for errors
+fn compile_yara_rules(rules_string: &str) -> Result<Rules, Error> {
     let compiler = Compiler::new().unwrap();
-    let compiler = compiler
-        .add_rules_str(rules_string)
-        .expect("Should have parsed rule");
-    let compiled_rules = compiler
-        .compile_rules()
-        .expect("Should have compiled rules");
-    return compiled_rules;
+    // Parse the rules
+    let compiler_result = compiler
+        .add_rules_str(rules_string);
+    // Handle parse errors
+    let compiler = match compiler_result {
+        Ok(c) => c,
+        Err(e) => return Err(Error::from(e)),
+    };
+    // Compile the rules
+    let compiled_rules_result = compiler.compile_rules();
+    // Handle compile errors
+    let compiled_rules = match compiled_rules_result {
+        Ok(r) => r,
+        Err(e) => return Err(Error::from(e)),
+    };
+    return Ok(compiled_rules);
 }
 
 // Scan all process memories
