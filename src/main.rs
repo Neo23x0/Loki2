@@ -3,6 +3,7 @@ use std::str;
 use std::fs;
 use std::{path::Path};
 use log::Level;
+use flexi_logger::*;
 use sysinfo::CpuExt;
 use sysinfo::PidExt;
 use sysinfo::{ProcessExt, System, SystemExt, Disk, DiskExt};
@@ -196,7 +197,7 @@ fn scan_file(rules: &Rules, file: &Path) -> ArrayVec<YaraMatch, 100> {
 }
 
 // Evaluate platform & environment information
-fn evaluate_env() -> String {
+fn evaluate_env() {
     let mut sys = System::new_all();
     sys.refresh_all();
     // Command line arguments 
@@ -225,8 +226,6 @@ fn evaluate_env() -> String {
             disk.is_removable(),
         );
     }
-    // Return the OS type
-    return env::consts::OS.to_string();
 }
 
 // Welcome message
@@ -257,18 +256,30 @@ fn main() {
     }.parse_or_exit();
 
     // Logger
-    let mut log_level: Level = Level::Info;  // default
-    if args.debug { log_level = Level::Debug; }  // set to debug level
-    simple_logger::init_with_level(log_level).unwrap();
+    let mut log_level: String = "info".to_string(); // default
+    if args.debug { log_level = "debug".to_string() }  // set to debug level
+    let mut sys = System::new_all();
+    sys.refresh_all();
+    let log_file_name = format!("loki_{}", sys.host_name().unwrap());
+    Logger::try_with_str(log_level).unwrap()
+        .log_to_file(
+            FileSpec::default()
+                .basename(log_file_name)
+        )
+        .format(colored_default_format)
+        .duplicate_to_stdout(Duplicate::Info)
+        .append()
+        .start()
+        .unwrap();
     log::info!("LOKI scan started VERSION: {}", VERSION);
 
     // Print platform & environment information
-    let os_type = evaluate_env();
+    evaluate_env();
 
     // Set some default values
     // default target folder
     let mut target_folder: String = '/'.to_string(); 
-    if os_type == "windows" { target_folder = "C:\\".to_string(); }
+    if env::consts::OS.to_string() == "windows" { target_folder = "C:\\".to_string(); }
     // if target folder has ben set via command line flag
     if let Some(args_target_folder) = args.folder {
         target_folder = args_target_folder;
