@@ -1,7 +1,4 @@
 use std::env;
-use std::env::Args;
-use std::fmt::format;
-use std::iter::Scan;
 use std::str;
 use std::fs;
 use std::{path::Path};
@@ -76,6 +73,7 @@ fn initialize_rules() -> Rules {
     // we're concatenating all rules from all rule files to a single string and 
     // compile them all together into a single big rule set for performance purposes
     let mut all_rules = String::new();
+    let mut count = 0u16;
     // Reading the signature folder
     let files = fs::read_dir("./signatures/yara").unwrap();
     // Filter 
@@ -94,6 +92,7 @@ fn initialize_rules() -> Rules {
                 log::debug!("Successfully compiled rule file {:?} - adding it to the big set", file.path().to_str().unwrap());
                 // adding content of that file to the whole rules string
                 all_rules += &rules_string;
+                count += 1;
             },
             Err(e) => {
                 log::error!("Cannot compile rule file {:?}. Ignoring file. ERROR: {:?}", file.path().to_str().unwrap(), e)                
@@ -103,6 +102,7 @@ fn initialize_rules() -> Rules {
     // Compile the full set and return the compiled rules
     let compiled_all_rules = compile_yara_rules(&all_rules)
         .expect("Error parsing the composed rule set");
+    log::info!("Successfully compiled {} rule files into a big set", count);
     return compiled_all_rules;
 }
 
