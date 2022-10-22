@@ -24,7 +24,7 @@ jobs:
 
     - name: Install OpenSSL Dev
       run: |
-        brew install openssl@1.1 openssl-devel
+        brew install openssl@1.1
         mkdir -p /usr/local/opt
         ln -s /opt/homebrew/opt/openssl\@1.1 /usr/local/opt/openssl
 
