@@ -57,6 +57,15 @@ struct ScanConfig {
     scan_all_types: bool,
 }
 
+#[derive(Debug)]
+struct ExtVars {
+    filename: String,
+    filepath: String,
+    filetype: String,
+    extension: String,
+    owner: String,
+}
+
 // Initialize the rule files
 fn initialize_rules() -> Rules {
     // Composed YARA rule set 
@@ -95,7 +104,12 @@ fn initialize_rules() -> Rules {
 
 // Compile a rule set string and check for errors
 fn compile_yara_rules(rules_string: &str) -> Result<Rules, Error> {
-    let compiler = Compiler::new().unwrap();
+    let mut compiler = Compiler::new().unwrap();
+    compiler.define_variable("filename", "")?;
+    compiler.define_variable("filepath", "")?;
+    compiler.define_variable("extension", "")?;
+    compiler.define_variable("filetype", "")?;
+    compiler.define_variable("owner", "")?;
     // Parse the rules
     let compiler_result = compiler
         .add_rules_str(rules_string);
@@ -179,14 +193,16 @@ fn scan_path (target_folder: String, compiled_rules: &Rules, scan_config: &ScanC
         }
         // Skip certain file types
         let extension = entry.path().extension().unwrap_or_default().to_str().unwrap();
-        let file_format = FileFormat::from_file(entry.path()).unwrap_or_default().to_owned().to_string();
-        
-        if !FILE_TYPES.contains(&file_format.as_str()) &&  // Include certain file types
+        let file_format = FileFormat::from_file(entry.path()).unwrap_or_default();
+        let file_format_desc = file_format.to_owned().to_string();
+        let file_format_extension = file_format.name();
+
+        if !FILE_TYPES.contains(&file_format_desc.as_str()) &&  // Include certain file types
             !REL_EXTS.contains(&extension) &&  // Include extensions that are in the relevant extensions list 
             !scan_config.scan_all_types  // Scan all types if user enforced it via command line flag
             { 
                 log::trace!("Skipping file due to extension or type FILE: {} EXT: {:?} TYPE: {:?}", 
-                entry.path().display(), extension, file_format);
+                entry.path().display(), extension, file_format_desc);
                 continue; 
             };
 
@@ -196,10 +212,21 @@ fn scan_path (target_folder: String, compiled_rules: &Rules, scan_config: &ScanC
         // ------------------------------------------------------------
         // Matches (all types)
         let mut sample_matches = ArrayVec::<GenMatch, 100>::new();
+        
         // ------------------------------------------------------------
         // YARA scanning
+        // Preparing the external variables
+        let ext_vars = ExtVars{
+            filename: entry.path().file_name().unwrap().to_string_lossy().to_string(),
+            filepath: entry.path().parent().unwrap().to_string_lossy().to_string(),
+            extension: extension.to_string(),
+            filetype: file_format_extension.to_ascii_uppercase(),
+            owner: "".to_string(),  // TODO
+        };
+        log::trace!("Passing external variables to the scan EXT_VARS: {:?}", ext_vars);
+        // Actual scanning and result analysis
         let yara_matches = 
-            scan_file(&compiled_rules, entry.path(), scan_config);
+            scan_file(&compiled_rules, entry.path(), scan_config, &ext_vars);
         for ymatch in yara_matches.iter() {
             if !sample_matches.is_full() {
                 let match_message: String = format!("YARA match with rule {}", ymatch.rulename);
@@ -225,9 +252,18 @@ fn scan_path (target_folder: String, compiled_rules: &Rules, scan_config: &ScanC
 }
 
 // scan a file
-fn scan_file(rules: &Rules, file: &Path, scan_config: &ScanConfig) -> ArrayVec<YaraMatch, 100> {
-    let results = rules
-    .scan_file(file, 10);
+fn scan_file(rules: &Rules, file: &Path, scan_config: &ScanConfig, ext_vars: &ExtVars) -> ArrayVec<YaraMatch, 100> {
+    // Preparing the external variables
+    // Preparing the scanner
+    let mut scanner = rules.scanner().unwrap();
+    scanner.set_timeout(10);
+    scanner.define_variable("filename", ext_vars.filename.as_str()).unwrap();
+    scanner.define_variable("filepath", ext_vars.filepath.as_str()).unwrap();
+    scanner.define_variable("extension", ext_vars.extension.as_str()).unwrap();
+    scanner.define_variable("filetype", ext_vars.filetype.as_str()).unwrap();
+    scanner.define_variable("owner", ext_vars.owner.as_str()).unwrap();
+    // Scan file
+    let results = scanner.scan_file(file);
     match &results {
         Ok(_) => {},
         Err(e) => { 
