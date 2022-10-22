@@ -1,4 +1,4 @@
-name: Rust
+name: LOKI2 Build Linux
 
 on:
   push:
