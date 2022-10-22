@@ -323,6 +323,36 @@ fn evaluate_env() {
     }
 }
 
+// Log file format for files
+fn log_file_format(
+    write: &mut dyn std::io::Write,
+    now: &mut flexi_logger::DeferredNow,
+    record: &log::Record,
+ ) -> std::io::Result<()> {
+    write!(
+        write,
+        "[{}] {} {}",
+        now.format("%Y-%m-%dT%H:%M:%SZ"),
+        record.level(),
+        &record.args()
+    )
+}
+
+// Log file format for command line
+fn log_cmdline_format(
+    w: &mut dyn std::io::Write,
+    _now: &mut DeferredNow,
+    record: &Record,
+) -> Result<(), std::io::Error> {
+    let level = record.level();
+    write!(
+        w,
+        "[{}] {}",
+        style(level).paint(level.to_string()),
+        record.args().to_string()
+    )
+}
+
 // Welcome message
 fn welcome_message() {
     println!("------------------------------------------------------------------------");
@@ -374,7 +404,9 @@ fn main() {
             FileSpec::default()
                 .basename(log_file_name)
         )
-        .format(colored_default_format)
+        .use_utc()
+        .format(log_cmdline_format)
+        .format_for_files(log_file_format)
         .duplicate_to_stdout(std_out)
         .append()
         .start()
