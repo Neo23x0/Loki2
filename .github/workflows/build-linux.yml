@@ -33,7 +33,6 @@ jobs:
         ./configure --with-crypto
         make
         sudo make install
-        ldconfig
     
     - name: Build
       run: cargo build --verbose
