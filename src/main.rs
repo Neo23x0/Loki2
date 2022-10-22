@@ -1,14 +1,18 @@
 use std::env;
+use std::env::Args;
+use std::fmt::format;
+use std::iter::Scan;
 use std::str;
 use std::fs;
 use std::{path::Path};
-use log::Level;
+use rustop::opts;
+use filesize::PathExt;
 use flexi_logger::*;
+use file_format::FileFormat;
 use sysinfo::CpuExt;
 use sysinfo::PidExt;
 use sysinfo::{ProcessExt, System, SystemExt, Disk, DiskExt};
 use arrayvec::ArrayVec;
-use rustop::opts;
 use walkdir::WalkDir;
 use human_bytes::human_bytes;
 use yara::*;
@@ -20,6 +24,22 @@ use yara::*;
 
 const VERSION: &str = "2.0.0-alpha";
 
+const REL_EXTS: &'static [&'static str] = &[".exe", ".dll", ".bat", ".ps1", ".asp", ".aspx", ".jsp", ".jspx", ".php", ".plist"];
+const MODULES: &'static [&'static str] = &["FileScan", "ProcessCheck"];
+const FILE_TYPES: &'static [&'static str] = &[
+    "Debian Binary Package",
+    "Executable and Linkable Format",
+    "Google Chrome Extension",
+    "Java Class",
+    "Microsoft Compiled HTML Help",
+    "PCAP Dump",
+    "PCAP Next Generation Dump",
+    "Windows Executable",
+    "Windows Shortcut",
+    "ZIP",
+    "Zstandard"
+];  // see https://docs.rs/file-format/latest/file_format/index.html
+
 #[derive(Debug)]
 struct GenMatch {
     message: String,
@@ -29,6 +49,12 @@ struct GenMatch {
 struct YaraMatch {
     rulename: String,
     score: u8,
+}
+
+struct ScanConfig {
+    max_file_size: usize,
+    show_access_errors: bool,
+    scan_all_types: bool,
 }
 
 // Initialize the rule files
@@ -63,7 +89,7 @@ fn initialize_rules() -> Rules {
     }
     // Compile the full set and return the compiled rules
     let compiled_all_rules = compile_yara_rules(&all_rules)
-        .expect("Error parsing the compsed rule set");
+        .expect("Error parsing the composed rule set");
     return compiled_all_rules;
 }
 
@@ -90,7 +116,7 @@ fn compile_yara_rules(rules_string: &str) -> Result<Rules, Error> {
 }
 
 // Scan process memory of all processes
-fn scan_processes(compiled_rules: &Rules) ->() {
+fn scan_processes(compiled_rules: &Rules, scan_config: &ScanConfig) ->() {
     // Refresh the process information
     let mut sys = System::new_all();
     sys.refresh_all();
@@ -108,7 +134,8 @@ fn scan_processes(compiled_rules: &Rules) ->() {
         match &yara_matches {
             Ok(_) => {},
             Err(e) => {
-                log::debug!("Error while scanning process memory PROCESS: {} ERROR: {:?}", process.name(), e);
+                if scan_config.show_access_errors { log::error!("Error while scanning process memory PROCESS: {} ERROR: {:?}", process.name(), e); }
+                else { log::debug!("Error while scanning process memory PROCESS: {} ERROR: {:?}", process.name(), e); }
             }
         }
         // TODO: better scan error handling (debug messages)
@@ -132,20 +159,47 @@ fn scan_processes(compiled_rules: &Rules) ->() {
 }
 
 // Scan a given file system path
-fn scan_path (target_folder: String, compiled_rules: &Rules) -> () {
+fn scan_path (target_folder: String, compiled_rules: &Rules, scan_config: &ScanConfig) -> () {
     // Walk the file system
     for entry in WalkDir::new(target_folder).into_iter().filter_map(|e| e.ok()) {
-        // Skip directories
-        if entry.path().is_dir() { continue };
+        
+        // Skip certain elements
+        // Skip all elements that aren't files
+        if !entry.path().is_file() { 
+            log::trace!("Skipped element that isn't a file ELEMENT: {} TYPE: {:?}", entry.path().display(), entry.path().symlink_metadata());
+            continue;
+        };
+        // Skip big files
+        let metadata = entry.path().symlink_metadata().unwrap();
+        let realsize = entry.path().size_on_disk_fast(&metadata).unwrap();
+        if realsize > scan_config.max_file_size as u64 { 
+            log::trace!("Skipping file due to size FILE: {} SIZE: {} MAX_FILE_SIZE: {}", 
+            entry.path().display(), realsize, scan_config.max_file_size);
+            continue; 
+        }
+        // Skip certain file types
+        let extension = entry.path().extension().unwrap_or_default().to_str().unwrap();
+        let file_format = FileFormat::from_file(entry.path()).unwrap_or_default().to_owned().to_string();
+        
+        if !FILE_TYPES.contains(&file_format.as_str()) &&  // Include certain file types
+            !REL_EXTS.contains(&extension) &&  // Include extensions that are in the relevant extensions list 
+            !scan_config.scan_all_types  // Scan all types if user enforced it via command line flag
+            { 
+                log::trace!("Skipping file due to extension or type FILE: {} EXT: {:?} TYPE: {:?}", 
+                entry.path().display(), extension, file_format);
+                continue; 
+            };
+
         // Debug output : show every file that gets scanned
         log::debug!("Scanning file {}", entry.path().display());
+        
         // ------------------------------------------------------------
         // Matches (all types)
         let mut sample_matches = ArrayVec::<GenMatch, 100>::new();
         // ------------------------------------------------------------
         // YARA scanning
         let yara_matches = 
-            scan_file(&compiled_rules, entry.path());
+            scan_file(&compiled_rules, entry.path(), scan_config);
         for ymatch in yara_matches.iter() {
             if !sample_matches.is_full() {
                 let match_message: String = format!("YARA match with rule {}", ymatch.rulename);
@@ -171,13 +225,14 @@ fn scan_path (target_folder: String, compiled_rules: &Rules) -> () {
 }
 
 // scan a file
-fn scan_file(rules: &Rules, file: &Path) -> ArrayVec<YaraMatch, 100> {
+fn scan_file(rules: &Rules, file: &Path, scan_config: &ScanConfig) -> ArrayVec<YaraMatch, 100> {
     let results = rules
     .scan_file(file, 10);
     match &results {
         Ok(_) => {},
         Err(e) => { 
-            log::debug!("Cannot access file FILE: {:?} ERROR: {:?}", file, e); 
+            if scan_config.show_access_errors { log::error!("Cannot access file FILE: {:?} ERROR: {:?}", file, e); }
+            else { log::debug!("Cannot access file FILE: {:?} ERROR: {:?}", file, e); }
         }
     }
     //println!("{:?}", results);
@@ -251,13 +306,26 @@ fn main() {
     // Parsing command line flags
     let (args, _rest) = opts! {
         synopsis "LOKI YARA and IOC Scanner";
+        opt max_file_size:usize=10_000_000, desc:"Maximum file size to scan";
+        opt show_access_errors:bool, desc:"Show all file and process access errors";
+        opt scan_all_files:bool, desc:"Scan all files regardless of their file type / extension";
         opt debug:bool, desc:"Show debugging information";
+        opt trace:bool, desc:"Show very verbose trace output";
+        opt noprocs:bool, desc:"Don't scan processes";
+        opt nofs:bool, desc:"Don't scan the file system";
         opt folder:Option<String>, desc:"Folder to scan"; // an optional (positional) parameter
     }.parse_or_exit();
+    // Create a config
+    let scan_config = ScanConfig {
+        max_file_size: args.max_file_size,
+        show_access_errors: args.show_access_errors,
+        scan_all_types: args.scan_all_files,
+    };
 
     // Logger
-    let mut log_level: String = "info".to_string(); // default
-    if args.debug { log_level = "debug".to_string() }  // set to debug level
+    let mut log_level: String = "info".to_string(); let mut std_out = Duplicate::Info; // default
+    if args.debug { log_level = "debug".to_string(); std_out = Duplicate::Debug; }  // set to debug level
+    if args.trace { log_level = "trace".to_string(); std_out = Duplicate::Trace; }  // set to trace level
     let mut sys = System::new_all();
     sys.refresh_all();
     let log_file_name = format!("loki_{}", sys.host_name().unwrap());
@@ -267,7 +335,7 @@ fn main() {
                 .basename(log_file_name)
         )
         .format(colored_default_format)
-        .duplicate_to_stdout(Duplicate::Info)
+        .duplicate_to_stdout(std_out)
         .append()
         .start()
         .unwrap();
@@ -275,6 +343,15 @@ fn main() {
 
     // Print platform & environment information
     evaluate_env();
+
+    // Evaluate active modules
+    let mut active_modules: ArrayVec<String, 20> = ArrayVec::<String, 20>::new();
+    for module in MODULES {
+        if args.noprocs && module.to_string() == "ProcessCheck" { continue; }
+        if args.nofs && module.to_string() == "FileScan" { continue; }
+        active_modules.insert(active_modules.len(), module.to_string());
+    }
+    log::info!("Active modules MODULES: {:?}", active_modules);
 
     // Set some default values
     // default target folder
@@ -290,11 +367,17 @@ fn main() {
     let compiled_rules = initialize_rules();
 
     // Process scan
-    log::info!("Scanning running processes ... ");
-    scan_processes(&compiled_rules);
+    if active_modules.contains(&"ProcessCheck".to_owned()) {
+        log::info!("Scanning running processes ... ");
+        scan_processes(&compiled_rules, &scan_config);
+    }
 
     // File system scan
-    log::info!("Scanning local file system ... ");
-    scan_path(target_folder, &compiled_rules);
+    if active_modules.contains(&"FileScan".to_owned()) {
+        log::info!("Scanning local file system ... ");
+        scan_path(target_folder, &compiled_rules, &scan_config);
+    }
 
+    // Finished scan
+    log::info!("LOKI scan finished");
 }
