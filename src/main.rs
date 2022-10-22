@@ -17,27 +17,31 @@ use walkdir::WalkDir;
 use human_bytes::human_bytes;
 use yara::*;
 
-// General TODOS
+// Specific TODOs
+// - skipping non-local file systems like network mounts or cloudfs drives
+
+// General TODOs
 // - better error handling
 // - putting all modules in an array and looping over that list instead of a fixed sequence
 // - restructuring project to multiple files
 
 const VERSION: &str = "2.0.0-alpha";
 
-const REL_EXTS: &'static [&'static str] = &[".exe", ".dll", ".bat", ".ps1", ".asp", ".aspx", ".jsp", ".jspx", ".php", ".plist"];
+const REL_EXTS: &'static [&'static str] = &[".exe", ".dll", ".bat", ".ps1", ".asp", ".aspx", ".jsp", ".jspx", 
+    ".php", ".plist", ".sh", ".vbs", ".js", ".dmp"];
 const MODULES: &'static [&'static str] = &["FileScan", "ProcessCheck"];
 const FILE_TYPES: &'static [&'static str] = &[
     "Debian Binary Package",
     "Executable and Linkable Format",
     "Google Chrome Extension",
-    "Java Class",
+    "ISO 9660",
+    // "Java Class", // buggy .. many other types get detected as Java Class
     "Microsoft Compiled HTML Help",
     "PCAP Dump",
     "PCAP Next Generation Dump",
     "Windows Executable",
     "Windows Shortcut",
     "ZIP",
-    "Zstandard"
 ];  // see https://docs.rs/file-format/latest/file_format/index.html
 
 #[derive(Debug)]
@@ -207,7 +211,7 @@ fn scan_path (target_folder: String, compiled_rules: &Rules, scan_config: &ScanC
             };
 
         // Debug output : show every file that gets scanned
-        log::debug!("Scanning file {}", entry.path().display());
+        log::debug!("Scanning file {} TYPE: {:?}", entry.path().display(), file_format_desc);
         
         // ------------------------------------------------------------
         // Matches (all types)

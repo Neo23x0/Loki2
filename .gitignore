@@ -16,3 +16,5 @@ Cargo.lock
 .vscode/*
 *.log
 signatures
+signatures/yara/test.yar
+signatures/yara/faulty.yar
