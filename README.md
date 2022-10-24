@@ -51,3 +51,9 @@ Options:
   -f, --folder                Folder to scan
   -h, --help                  Show this help message.
 ```
+
+# Screenshots
+
+LOKI 2 alpha version
+
+![Screenhot of Alpha Version](/screens/screen-alpha.png)
