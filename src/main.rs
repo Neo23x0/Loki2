@@ -1,4 +1,5 @@
 use std::env;
+use std::ptr::read;
 use std::str;
 use std::fs;
 use std::{path::Path};
@@ -8,9 +9,11 @@ use flexi_logger::*;
 use file_format::FileFormat;
 use sysinfo::CpuExt;
 use sysinfo::PidExt;
-use sysinfo::{ProcessExt, System, SystemExt, Disk, DiskExt};
+use sysinfo::{ProcessExt, System, SystemExt, DiskExt};
 use arrayvec::ArrayVec;
 use walkdir::WalkDir;
+use csv::Error as csvError;
+use csv::ReaderBuilder;
 use human_bytes::human_bytes;
 use yara::*;
 
@@ -24,6 +27,7 @@ use yara::*;
 
 const VERSION: &str = "2.0.0-alpha";
 
+const SIGNATURE_SOURCE: &str = "./signatures";
 const REL_EXTS: &'static [&'static str] = &[".exe", ".dll", ".bat", ".ps1", ".asp", ".aspx", ".jsp", ".jspx", 
     ".php", ".plist", ".sh", ".vbs", ".js", ".dmp"];
 const MODULES: &'static [&'static str] = &["FileScan", "ProcessCheck"];
@@ -67,6 +71,55 @@ struct ExtVars {
     owner: String,
 }
 
+#[derive(Debug)]
+struct HashIOC {
+    hash: String,
+    description: String,
+    score: u16,
+}
+
+// TODO: under construction - the data structure to hold the IOCs is still limited to 100.000 elements. 
+//       I have to find a data structure that allows to store an unknown number of entries.
+// Initialize the IOCs
+fn initialize_hash_iocs() { //-> Vec<HashIOC> {
+
+    // Compose the location of the hash IOC file
+    let hash_ioc_file = format!("{}/iocs/hash-iocs.txt", SIGNATURE_SOURCE);
+    // Read the hash IOC file
+    let hash_iocs_string = fs::read_to_string(hash_ioc_file).expect("Unable to read hash IOC file (use --debug for more information)");
+    // Configure the CSV reader
+    let mut reader = ReaderBuilder::new()
+        .delimiter(b';')
+        .flexible(true)
+        .from_reader(hash_iocs_string.as_bytes());
+    // Vector that holds the hashes
+    let mut hash_iocs = ArrayVec::<HashIOC, 100_000>::new();
+    // Read the lines from the CSV file
+    for result in reader.records() {
+        let record_result = result;
+        let record = match record_result {
+            Ok(r) => r,
+            Err(e) => { log::debug!("Cannot read line in hash IOCs file (which can be okay) ERROR: {:?}", e); continue;}
+        };
+        // If more than two elements have been found
+        if record.len() > 1 {
+            // if it's not a comment line
+            if !record[0].starts_with("#") {
+                log::trace!("Read hash IOC from from HASH: {} DESC: {}", &record[0], &record[1]);
+                if !hash_iocs.is_full() {
+                    hash_iocs.insert(
+                        hash_iocs.len(), 
+                        HashIOC { 
+                            hash: record[0].to_ascii_lowercase(), 
+                            description: record[1].to_string(), 
+                            score: 100,  // TODO 
+                        });
+                }
+            }
+        }
+    }
+}
+
 // Initialize the rule files
 fn initialize_rules() -> Rules {
     // Composed YARA rule set 
@@ -75,7 +128,8 @@ fn initialize_rules() -> Rules {
     let mut all_rules = String::new();
     let mut count = 0u16;
     // Reading the signature folder
-    let files = fs::read_dir("./signatures/yara").unwrap();
+    let yara_sigs_folder = format!("{}/yara", SIGNATURE_SOURCE);
+    let files = fs::read_dir(yara_sigs_folder).unwrap();
     // Filter 
     let filtered_files = files
         .filter_map(Result::ok)
@@ -434,6 +488,11 @@ fn main() {
         target_folder = args_target_folder;
     }
     
+    // Initialize IOCs 
+    // TODO: not ready yet
+    //log::info!("Initialize hash IOC rules ...");
+    //let hash_iocs = initialize_hash_iocs();
+
     // Initialize the rules
     log::info!("Initializing YARA rules ...");
     let compiled_rules = initialize_rules();

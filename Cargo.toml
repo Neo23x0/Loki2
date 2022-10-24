@@ -16,4 +16,5 @@ sysinfo = "*"
 human_bytes = "*"
 filesize = "*"
 file-format = "*"
+csv = "*"
 #termcolor = "*"  # unneeded 
