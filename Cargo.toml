@@ -1,20 +1,20 @@
 [package]
 name = "loki"
-version = "0.0.1"
+version = "2.0.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-log = "*"
+log = "0.4.*"
 yara = "*"
-walkdir = "2"
-rustop = "*"
-arrayvec = "*"
+walkdir = "2.3.*"
+rustop = "1.1.*"
+arrayvec = "0.7.*"
 flexi_logger = "*"
 sysinfo = "*"
-human_bytes = "*"
+human_bytes = "0.3.*"
 filesize = "*"
 file-format = "*"
-csv = "*"
+csv = "1.1.*"
 #termcolor = "*"  # unneeded 
