@@ -33,9 +33,14 @@ jobs:
         ./configure --with-crypto
         make
         sudo make install
-    
-    - name: Build
-      run: cargo build --verbose
 
-    #- name: Run tests
-    #  run: cargo test --verbose
+    - name: Install Cross-Compile Dependencies
+      run: | 
+        sudo apt-get install mingw-w64
+
+    - name: Add target tool chain
+      run: |
+        rustup target add x86_64-pc-windows-gnu
+
+    - name: Build
+      run: cargo build --target x86_64-pc-windows-gnu --verbose
