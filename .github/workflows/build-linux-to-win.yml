@@ -1,4 +1,4 @@
-name: LOKI2 Build Linux
+name: LOKI2 Build Win on Linux
 
 on:
   push:
