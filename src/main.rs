@@ -1,10 +1,13 @@
 use std::env;
+use std::fs::File;
+use std::io::Read;
 use std::ptr::read;
 use std::str;
-use std::fs;
+use std::{fs, io};
 use std::{path::Path};
 use rustop::opts;
 use filesize::PathExt;
+use memmap::Mmap;
 use flexi_logger::*;
 use file_format::FileFormat;
 use sysinfo::CpuExt;
@@ -15,6 +18,10 @@ use walkdir::WalkDir;
 use csv::Error as csvError;
 use csv::ReaderBuilder;
 use human_bytes::human_bytes;
+use sha2::{Sha256, Digest};
+use md5::*;
+use sha1::*;
+use memmap::MmapOptions;
 use yara::*;
 
 // Specific TODOs
@@ -63,6 +70,13 @@ struct ScanConfig {
 }
 
 #[derive(Debug)]
+struct SampleInfo {
+    MD5: String,
+    SHA1: String,
+    SHA256: String,
+}
+
+#[derive(Debug)]
 struct ExtVars {
     filename: String,
     filepath: String,
@@ -73,16 +87,24 @@ struct ExtVars {
 
 #[derive(Debug)]
 struct HashIOC {
+    hash_type: HashType,
     hash: String,
     description: String,
     score: u16,
 }
 
+#[derive(Debug)]
+enum HashType {
+    Md5,
+    Sha1,
+    Sha256,
+    Unknown
+}
+
 // TODO: under construction - the data structure to hold the IOCs is still limited to 100.000 elements. 
 //       I have to find a data structure that allows to store an unknown number of entries.
 // Initialize the IOCs
-fn initialize_hash_iocs() { //-> Vec<HashIOC> {
-
+fn initialize_hash_iocs() -> Vec<HashIOC> {
     // Compose the location of the hash IOC file
     let hash_ioc_file = format!("{}/iocs/hash-iocs.txt", SIGNATURE_SOURCE);
     // Read the hash IOC file
@@ -93,7 +115,7 @@ fn initialize_hash_iocs() { //-> Vec<HashIOC> {
         .flexible(true)
         .from_reader(hash_iocs_string.as_bytes());
     // Vector that holds the hashes
-    let mut hash_iocs = ArrayVec::<HashIOC, 100_000>::new();
+    let mut hash_iocs:Vec<HashIOC> = Vec::new();
     // Read the lines from the CSV file
     for result in reader.records() {
         let record_result = result;
@@ -105,20 +127,32 @@ fn initialize_hash_iocs() { //-> Vec<HashIOC> {
         if record.len() > 1 {
             // if it's not a comment line
             if !record[0].starts_with("#") {
-                log::trace!("Read hash IOC from from HASH: {} DESC: {}", &record[0], &record[1]);
-                if !hash_iocs.is_full() {
-                    hash_iocs.insert(
-                        hash_iocs.len(), 
-                        HashIOC { 
-                            hash: record[0].to_ascii_lowercase(), 
-                            description: record[1].to_string(), 
-                            score: 100,  // TODO 
-                        });
-                }
+                // determining hash type
+                let hash_type: HashType = get_hash_type(&record[0]);
+                log::trace!("Read hash IOC from from HASH: {} DESC: {} TYPE: {:?}", &record[0], &record[1], hash_type);
+                hash_iocs.push(
+                    HashIOC { 
+                        hash_type: hash_type,
+                        hash: record[0].to_ascii_lowercase(), 
+                        description: record[1].to_string(), 
+                        score: 100,  // TODO 
+                    });
             }
         }
     }
+    return hash_iocs;
 }
+
+// Get the hash type
+fn get_hash_type(hash_value: &str) -> HashType {
+    let hash_value_length = hash_value.len();
+    match hash_value_length {
+        32 => HashType::Md5,
+        40 => HashType::Sha1,
+        64 => HashType::Sha256,
+        _ => HashType::Unknown,
+    }
+} 
 
 // Initialize the rule files
 fn initialize_rules() -> Rules {
@@ -231,7 +265,7 @@ fn scan_processes(compiled_rules: &Rules, scan_config: &ScanConfig) ->() {
 }
 
 // Scan a given file system path
-fn scan_path (target_folder: String, compiled_rules: &Rules, scan_config: &ScanConfig) -> () {
+fn scan_path (target_folder: String, compiled_rules: &Rules, scan_config: &ScanConfig, hash_iocs: &Vec<HashIOC>) -> () {
     // Walk the file system
     for entry in WalkDir::new(target_folder).into_iter().filter_map(|e| e.ok()) {
         
@@ -268,9 +302,48 @@ fn scan_path (target_folder: String, compiled_rules: &Rules, scan_config: &ScanC
         log::debug!("Scanning file {} TYPE: {:?}", entry.path().display(), file_format_desc);
         
         // ------------------------------------------------------------
+        // VARS
         // Matches (all types)
         let mut sample_matches = ArrayVec::<GenMatch, 100>::new();
+        let mut sample_info: SampleInfo;
+
+        // ------------------------------------------------------------
+        // READ FILE
+        // Read file to data blob
+        let result = fs::File::open(&entry.path());
+        let file_handle = match &result {
+            Ok(data) => data,
+            Err(e) => { 
+                if scan_config.show_access_errors { log::error!("Cannot access file FILE: {:?} ERROR: {:?}", entry.path(), e); }
+                else { log::debug!("Cannot access file FILE: {:?} ERROR: {:?}", entry.path(), e); }
+                continue; // skip the rest of the analysis 
+            }
+        };
+        let mmap = unsafe { MmapOptions::new().map(&file_handle).unwrap() };
+
+        // ------------------------------------------------------------
+        // IOC Matching
+
+        // Hash Matching
+        let md5_hash = md5::compute(&mmap);
+        let sha1_hash_array = Sha1::new()
+            .chain_update(&mmap)
+            .finalize();
+        let sha256_hash_array = Sha256::new()
+            .chain_update(&mmap)
+            .finalize();
+        let sha1_hash = hex::encode(&sha1_hash_array);
+        let sha256_hash = hex::encode(&sha256_hash_array);
+        //let md5_hash = hex::encode(&md5_hash_array);
+        log::trace!("Hash calc of FILE: {:?} SHA256: {} SHA1: {} MD5: {:?}", entry.path(), sha256_hash, sha1_hash, md5_hash);
         
+        // Sample Info
+        let sample_info = SampleInfo {
+            MD5: format!("{:x}", md5_hash),
+            SHA1: sha1_hash,
+            SHA256: sha256_hash,
+        };
+
         // ------------------------------------------------------------
         // YARA scanning
         // Preparing the external variables
@@ -284,7 +357,7 @@ fn scan_path (target_folder: String, compiled_rules: &Rules, scan_config: &ScanC
         log::trace!("Passing external variables to the scan EXT_VARS: {:?}", ext_vars);
         // Actual scanning and result analysis
         let yara_matches = 
-            scan_file(&compiled_rules, entry.path(), scan_config, &ext_vars);
+            scan_file(&compiled_rules, &file_handle, scan_config, &ext_vars);
         for ymatch in yara_matches.iter() {
             if !sample_matches.is_full() {
                 let match_message: String = format!("YARA match with rule {}", ymatch.rulename);
@@ -304,13 +377,17 @@ fn scan_path (target_folder: String, compiled_rules: &Rules, scan_config: &ScanC
             }
             // Print line
             // TODO: print all matches in a nested form
-            log::warn!("File match found FILE: {} SCORE: {} REASONS: {:?}", entry.path().display(), total_score, sample_matches);
+            log::warn!("File match found FILE: {} {:?} SCORE: {} REASONS: {:?}", 
+                entry.path().display(), 
+                sample_info, 
+                total_score, 
+                sample_matches);
         }
     }
 }
 
 // scan a file
-fn scan_file(rules: &Rules, file: &Path, scan_config: &ScanConfig, ext_vars: &ExtVars) -> ArrayVec<YaraMatch, 100> {
+fn scan_file(rules: &Rules, file_handle: &File, scan_config: &ScanConfig, ext_vars: &ExtVars) -> ArrayVec<YaraMatch, 100> {
     // Preparing the external variables
     // Preparing the scanner
     let mut scanner = rules.scanner().unwrap();
@@ -321,12 +398,11 @@ fn scan_file(rules: &Rules, file: &Path, scan_config: &ScanConfig, ext_vars: &Ex
     scanner.define_variable("filetype", ext_vars.filetype.as_str()).unwrap();
     scanner.define_variable("owner", ext_vars.owner.as_str()).unwrap();
     // Scan file
-    let results = scanner.scan_file(file);
+    let results = scanner.scan_fd(file_handle);
     match &results {
         Ok(_) => {},
         Err(e) => { 
-            if scan_config.show_access_errors { log::error!("Cannot access file FILE: {:?} ERROR: {:?}", file, e); }
-            else { log::debug!("Cannot access file FILE: {:?} ERROR: {:?}", file, e); }
+            if scan_config.show_access_errors { log::error!("Cannot access file descriptor ERROR: {:?}", e); }
         }
     }
     //println!("{:?}", results);
@@ -490,8 +566,8 @@ fn main() {
     
     // Initialize IOCs 
     // TODO: not ready yet
-    //log::info!("Initialize hash IOC rules ...");
-    //let hash_iocs = initialize_hash_iocs();
+    log::info!("Initialize hash IOCs ...");
+    let hash_iocs = initialize_hash_iocs();
 
     // Initialize the rules
     log::info!("Initializing YARA rules ...");
@@ -506,7 +582,7 @@ fn main() {
     // File system scan
     if active_modules.contains(&"FileScan".to_owned()) {
         log::info!("Scanning local file system ... ");
-        scan_path(target_folder, &compiled_rules, &scan_config);
+        scan_path(target_folder, &compiled_rules, &scan_config, &hash_iocs);
     }
 
     // Finished scan
