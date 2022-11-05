@@ -1,9 +1,36 @@
 # LOKI2
 LOKI - Simple IOC and YARA Scanner
 
-# Status
+## Status
 
 Work in Progress. This version is not ready for use. There's still some work to do for a first release. 
+
+Current tasks I'm working on:
+
+1. Cross-compilation for Windows - see [this tweet](https://twitter.com/cyb3rops/status/1584100428253274112) for details. Maybe someone can help me with that build target configuration and the github workflow [.github/workflows/build-linux-to-win.yml](.github/workflows/build-linux-to-win.yml)
+2. I'm trying to figure out the best layout to restructure the code in the project (package) into separate files per feature
+3. I'm exploring the best way to store the initialized IOCs of variable size (unknown size at compile time)
+
+### What's already implemented
+
+- System reconnaissance (system and hardware information for the log)
+- Logging and formatting of the different log outputs
+- File system walk
+- Exclusions based on file characteristics
+- YARA rule initialization, syntax checks, and error handling
+- YARA scanning of files
+- YARA scanning of process memory 
+
+### What's still to do
+
+- IOC initialization - hash values
+- IOC initialization - file patterns
+- IOC initialization - C2 patterns (FQDN, IP)
+- IOC matching on files (hash, file pattern)
+- C2 IOC matching (process connections)
+- File system walk exceptions: network drivers, mounted drives etc.
+- Custom exclusions (regex on file path)
+- Release workflows (automatically build and provide as release)
 
 # Setup Build Environment
 
