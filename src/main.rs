@@ -5,9 +5,13 @@ use std::ptr::read;
 use std::str;
 use std::{fs, io};
 use std::{path::Path};
+use std::time::{SystemTime, UNIX_EPOCH};
 use rustop::opts;
 use filesize::PathExt;
 use memmap::Mmap;
+use chrono::DateTime;
+use chrono::offset::Utc;
+use chrono::prelude::*;
 use flexi_logger::*;
 use file_format::FileFormat;
 use sysinfo::CpuExt;
@@ -55,12 +59,12 @@ const FILE_TYPES: &'static [&'static str] = &[
 #[derive(Debug)]
 struct GenMatch {
     message: String,
-    score: u8,
+    score: u16,
 }
 
 struct YaraMatch {
     rulename: String,
-    score: u8,
+    score: u16,
 }
 
 struct ScanConfig {
@@ -74,6 +78,9 @@ struct SampleInfo {
     MD5: String,
     SHA1: String,
     SHA256: String,
+    atime: String,
+    mtime: String,
+    ctime: String,
 }
 
 #[derive(Debug)]
@@ -88,7 +95,7 @@ struct ExtVars {
 #[derive(Debug)]
 struct HashIOC {
     hash_type: HashType,
-    hash: String,
+    hash_value: String,
     description: String,
     score: u16,
 }
@@ -133,7 +140,7 @@ fn initialize_hash_iocs() -> Vec<HashIOC> {
                 hash_iocs.push(
                     HashIOC { 
                         hash_type: hash_type,
-                        hash: record[0].to_ascii_lowercase(), 
+                        hash_value: record[0].to_ascii_lowercase(), 
                         description: record[1].to_string(), 
                         score: 100,  // TODO 
                     });
@@ -257,6 +264,7 @@ fn scan_processes(compiled_rules: &Rules, scan_config: &ScanConfig) ->() {
             }
         }
 
+        // Show matches on process
         if proc_matches.len() > 0 {
             log::warn!("Process with matches found PID: {} PROCESS: {} REASONS: {:?}", 
             pid, process.name(), proc_matches);
@@ -307,6 +315,15 @@ fn scan_path (target_folder: String, compiled_rules: &Rules, scan_config: &ScanC
         let mut sample_matches = ArrayVec::<GenMatch, 100>::new();
         let mut sample_info: SampleInfo;
 
+        // TIME STAMPS
+        let metadata = fs::metadata(entry.path()).unwrap();
+        let msecs = &metadata.modified().unwrap().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        let asecs = &metadata.accessed().unwrap().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        let csecs = &metadata.created().unwrap().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        let mtime = Utc.timestamp(*msecs as i64, 0);
+        let atime = Utc.timestamp(*asecs as i64, 0);
+        let ctime = Utc.timestamp(*csecs as i64, 0);
+
         // ------------------------------------------------------------
         // READ FILE
         // Read file to data blob
@@ -325,23 +342,49 @@ fn scan_path (target_folder: String, compiled_rules: &Rules, scan_config: &ScanC
         // IOC Matching
 
         // Hash Matching
-        let md5_hash = md5::compute(&mmap);
+        // Generate hashes
+        let md5_value = format!("{:x}", md5::compute(&mmap));
         let sha1_hash_array = Sha1::new()
             .chain_update(&mmap)
             .finalize();
         let sha256_hash_array = Sha256::new()
             .chain_update(&mmap)
             .finalize();
-        let sha1_hash = hex::encode(&sha1_hash_array);
-        let sha256_hash = hex::encode(&sha256_hash_array);
+        let sha1_value = hex::encode(&sha1_hash_array);
+        let sha256_value = hex::encode(&sha256_hash_array);
         //let md5_hash = hex::encode(&md5_hash_array);
-        log::trace!("Hash calc of FILE: {:?} SHA256: {} SHA1: {} MD5: {:?}", entry.path(), sha256_hash, sha1_hash, md5_hash);
+        log::trace!("Hashes of FILE: {:?} SHA256: {} SHA1: {} MD5: {}", entry.path(), sha256_value, sha1_value, md5_value);
+        // Compare hashes with hash IOCs
+        let mut hash_match: bool = false;
+        for hash_ioc in hash_iocs.iter() {
+            if !sample_matches.is_full() {
+                match hash_ioc.hash_type {
+                    HashType::Md5 => { if hash_ioc.hash_value == md5_value { hash_match = true; }}, 
+                    HashType::Sha1 => { if hash_ioc.hash_value == sha1_value { hash_match = true; }}, 
+                    HashType::Sha256 => { if hash_ioc.hash_value == sha256_value { hash_match = true; }}, 
+                    _ => {},
+                }
+            }
+            // Hash Match
+            if hash_match {
+                let match_message: String = format!("HASH match with IOC HASH: {} DESC: {}", hash_ioc.hash_value, hash_ioc.description);
+                sample_matches.insert(
+                    sample_matches.len(), 
+                    // TODO: get meta data in a safe way from Vec structure
+                    GenMatch{message: match_message, score: hash_ioc.score}
+                );
+            }
+        }
         
-        // Sample Info
+        // ------------------------------------------------------------
+        // SAMPLE INFO 
         let sample_info = SampleInfo {
-            MD5: format!("{:x}", md5_hash),
-            SHA1: sha1_hash,
-            SHA256: sha256_hash,
+            MD5: md5_value,
+            SHA1: sha1_value,
+            SHA256: sha256_value,
+            atime: atime.to_rfc3339(),
+            mtime: mtime.to_rfc3339(),
+            ctime: ctime.to_rfc3339(),
         };
 
         // ------------------------------------------------------------
@@ -371,7 +414,7 @@ fn scan_path (target_folder: String, compiled_rules: &Rules, scan_config: &ScanC
         // Scan Results
         if sample_matches.len() > 0 {
             // Calculate a total score
-            let mut total_score: u8 = 0; 
+            let mut total_score: u16 = 0; 
             for sm in sample_matches.iter() {
                 total_score += sm.score;
             }
