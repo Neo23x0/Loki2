@@ -16,17 +16,19 @@ Current tasks I'm working on:
 - System reconnaissance (system and hardware information for the log)
 - Logging and formatting of the different log outputs
 - File system walk
+- File time evaluation (MAC timestamps)
 - Exclusions based on file characteristics
+- IOC initialization - hash values
+- IOC matching on files (hashes)
 - YARA rule initialization, syntax checks, and error handling
 - YARA scanning of files
 - YARA scanning of process memory 
 
 ### What's still to do
 
-- IOC initialization - hash values
 - IOC initialization - file patterns
 - IOC initialization - C2 patterns (FQDN, IP)
-- IOC matching on files (hash, file pattern)
+- IOC matching on files (file patterns)
 - C2 IOC matching (process connections)
 - File system walk exceptions: network drivers, mounted drives etc.
 - Custom exclusions (regex on file path)
