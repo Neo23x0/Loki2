@@ -16,11 +16,11 @@ jobs:
 
     env:
       CC: gcc
-      TARGET_PREFIX: /usr/x86_64-apple-darwin
-      CFLAGS: -I/usr/x86_64-apple-darwin/include
-      YARA_INCLUDE_DIR: /usr/x86_64-apple-darwin/include
-      LIBRARY_PATH: /usr/x86_64-apple-darwin/lib
-      PKG_CONFIG_PATH: /usr/x86_64-apple-darwin/lib/pkgconfig
+      TARGET_PREFIX: /usr/local/x86_64-apple-darwin
+      CFLAGS: -I/usr/local/x86_64-apple-darwin/include
+      YARA_INCLUDE_DIR: /usr/local/x86_64-apple-darwin/include
+      LIBRARY_PATH: /usr/local/x86_64-apple-darwin/lib
+      PKG_CONFIG_PATH: /usr/local/x86_64-apple-darwin/lib/pkgconfig
 
     steps:
     - uses: actions/checkout@v3
