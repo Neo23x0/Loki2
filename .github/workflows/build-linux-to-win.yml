@@ -12,31 +12,49 @@ env:
 jobs:
   build:
 
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
+
+    env:
+      CC: x86_64-w64-mingw32-gcc
+      WINDRES: x86_64-w64-mingw32-windres
+      SYSTEM: MINGW64
+      TARGET_PREFIX: /usr/x86_64-w64-mingw32
+      PKG_CONFIG_PATH: /usr/x86_64-w64-mingw32/lib/pkgconfig
 
     steps:
     - uses: actions/checkout@v3
 
     - name: Install Dependencies
       run: | 
-        sudo apt-get install automake libtool make gcc pkg-config flex bison clang
+        sudo apt-get install automake libtool make gcc pkg-config flex bison clang mingw-w64 wget git
 
     - name: Install OpenSSL Dev
       run: |
-        sudo apt-get install libssl-dev
+        wget -nv -O openssl.tar.gz https://www.openssl.org/source/openssl-1.1.1p.tar.gz
+        mkdir openssl && cd openssl && tar --strip=1 -xzf ../openssl.tar.gz
+        ./config --prefix=$TARGET_PREFIX \
+            no-afalgeng \
+            no-async \
+            no-capieng \
+            no-dso \
+            no-shared \
+            no-sock \
+            no-ui
+        make
+        sudo make install_sw
 
     - name: Install YARA
       run: |
-        git clone https://github.com/VirusTotal/yara.git
-        cd yara
+        wget -nv -O yara.tar.gz https://github.com/VirusTotal/yara/archive/v4.2.3.tar.gz
+        mkdir yara && cd yara && tar --strip=1 -xzf ../yara.tar.gz
         ./bootstrap.sh
-        ./configure --with-crypto
+        LDFLAGS="$(pkg-config --static --libs libcrypto)" CPPFLAGS="-isystem $TARGET_PREFIX/include -D__CRT__NO_INLINE" ./configure \
+            --with-crypto \
+            --disable-shared \
+            --host=x86_64-w64-mingw32 \
+            --prefix=$TARGET_PREFIX
         make
         sudo make install
-
-    - name: Install Cross-Compile Dependencies
-      run: | 
-        sudo apt-get install mingw-w64
 
     - name: Add target tool chain
       run: |
