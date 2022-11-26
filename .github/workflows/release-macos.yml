@@ -57,13 +57,16 @@ jobs:
     - name: Build
       run: cargo build --release --verbose
 
-    - name: Install zip
-      uses: montudor/action-zip@v1
-
-    - name: Renaming and compressing the folder
+    - name: Renaming dist folder
       run: |
         mv ./dist ./loki
-        zip -qq -r loki.zip loki
+
+    - name: Archive Release
+      uses: thedoctor0/zip-release@main
+      with:
+        type: 'zip'
+        filename: 'loki.zip'
+        directory: './loki'
 
     - name: Upload assets
       id: upload-release-asset 
