@@ -57,6 +57,9 @@ jobs:
     - name: Build
       run: cargo build --release --verbose
 
+    - name: Build Dist
+      run: make dist
+
     - name: Renaming dist folder
       run: |
         mv ./dist ./loki
