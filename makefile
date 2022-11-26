@@ -3,16 +3,24 @@
 .DEFAULT_GOAL := build
 
 # Loki binary name
-LOKI_BINARY 				:=
+BUILD_TARGET := 
+LOKI_BINARY :=
 ifeq ($(OS),Windows_NT)
-	LOKI_BINARY = loki.exe
-else
-	LOKI_BINARY = loki
+	BUILD_TARGET=--target x86_64-pc-windows-gnu
+	LOKI_BINARY=loki.exe
+endif
+ifeq ($(UNAME), Darwin)
+	BUILD_TARGET=
+	LOKI_BINARY=loki
+endif
+ifeq ($(UNAME), Linux)
+	BUILD_TARGET=--target x86_64-unknown-linux-musl 
+	LOKI_BINARY=loki
 endif
 
 build:
 	@echo [+] Building LOKI release version ...
-	cargo build --release
+	cargo build --release $(BUILD_TARGET)
 	@echo [+] Build successful!
 
 dist: build
