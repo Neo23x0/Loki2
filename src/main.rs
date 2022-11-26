@@ -29,12 +29,12 @@ const MODULES: &'static [&'static str] = &["FileScan", "ProcessCheck"];
 #[derive(Debug)]
 pub struct GenMatch {
     message: String,
-    score: u16,
+    score: i16,
 }
 
 pub struct YaraMatch {
     rulename: String,
-    score: u16,
+    score: i16,
 }
 
 pub struct ScanConfig {
@@ -57,7 +57,7 @@ pub struct HashIOC {
     hash_type: HashType,
     hash_value: String,
     description: String,
-    score: u16,
+    score: i16,
 }
 
 #[derive(Debug)]
@@ -66,6 +66,20 @@ pub enum HashType {
     Sha1,
     Sha256,
     Unknown
+}
+
+#[derive(Debug)]
+pub struct FilenameIOC {
+    pattern: String, 
+    ioc_type: FilenameIOCType,
+    description: String, 
+    score: i16,
+}
+
+#[derive(Debug)]
+pub enum FilenameIOCType {
+    String,
+    Regex
 }
 
 // TODO: under construction - the data structure to hold the IOCs is still limited to 100.000 elements. 
@@ -122,8 +136,70 @@ fn get_hash_type(hash_value: &str) -> HashType {
     }
 } 
 
+// Initialize filename IOCs / patterns
+fn initialize_filename_iocs() -> Vec<FilenameIOC> {
+    // Compose the location of the hash IOC file
+    let filename_ioc_file = format!("{}/iocs/filename-iocs.txt", SIGNATURE_SOURCE);
+    // Read the hash IOC file
+    let filename_iocs_string = fs::read_to_string(filename_ioc_file).expect("Unable to read filename IOC file (use --debug for more information)");
+    // Vector that holds the hashes
+    let mut filename_iocs:Vec<FilenameIOC> = Vec::new();
+    // Configure the CSV reader
+    let mut reader = ReaderBuilder::new()
+        .delimiter(b';')
+        .flexible(true)
+        .from_reader(filename_iocs_string.as_bytes());
+    
+    // Preset description 
+    let mut description = "N/A".to_string();
+    // Read the lines from the CSV file
+    for result in reader.records() {
+        let record_result = result;
+        let record = match record_result {
+            Ok(r) => r,
+            Err(e) => { log::debug!("Cannot read line in hash IOCs file (which can be okay) ERROR: {:?}", e); continue;}
+        };
+        // If line couldn't be split up (no separator)
+        if record.len() == 1 {
+            // If line starts with # ... this is a description
+            if record[0].starts_with("# ") {
+                description = record[0].strip_prefix("# ").unwrap().to_string();
+            }
+            else if record[0].starts_with("#") {
+                description = record[0].strip_prefix("#").unwrap().to_string();
+            }
+        }
+        // If more than two elements have been found
+        if record.len() > 1 {
+            // if it's not a comment line
+            if !record[0].starts_with("#") {
+                // determining hash type
+                let filename_ioc_type = get_filename_ioc_type(&record[0]);
+                log::trace!("Read filename IOC from from PATTERN: {} TYPE: {:?} SCORE: {}", &record[0], filename_ioc_type, &record[1]);
+                filename_iocs.push(
+                    FilenameIOC { 
+                        pattern: record[0].to_ascii_lowercase(),
+                        ioc_type: filename_ioc_type,
+                        description: description.clone(), 
+                        score: record[1].parse::<i16>().unwrap(),  // TODO 
+                    });
+            }
+        }
+    }
+    log::info!("Successfully initialized {} filename IOC values", filename_iocs.len());
+
+    // Return file name IOCs
+    return filename_iocs;
+}
+
+fn get_filename_ioc_type(filename_ioc_value: &str) -> FilenameIOCType {
+    // TODO ... detect filename IOC type
+    // currently every filename gets detected and initialized as regex (which consumes a lot of memory)
+    return FilenameIOCType::Regex;
+} 
+
 // Initialize the rule files
-fn initialize_rules() -> Rules {
+fn initialize_yara_rules() -> Rules {
     // Composed YARA rule set 
     // we're concatenating all rules from all rule files to a single string and 
     // compile them all together into a single big rule set for performance purposes
@@ -300,13 +376,14 @@ fn main() {
     }
     
     // Initialize IOCs 
-    // TODO: not ready yet
     log::info!("Initialize hash IOCs ...");
     let hash_iocs = initialize_hash_iocs();
+    log::info!("Initialize filename IOCs ...");
+    let filename_iocs = initialize_filename_iocs();
 
-    // Initialize the rules
+    // Initialize the YARA rules
     log::info!("Initializing YARA rules ...");
-    let compiled_rules = initialize_rules();
+    let compiled_rules = initialize_yara_rules();
 
     // Process scan
     if active_modules.contains(&"ProcessCheck".to_owned()) {
@@ -317,7 +394,7 @@ fn main() {
     // File system scan
     if active_modules.contains(&"FileScan".to_owned()) {
         log::info!("Scanning local file system ... ");
-        scan_path(target_folder, &compiled_rules, &scan_config, &hash_iocs);
+        scan_path(target_folder, &compiled_rules, &scan_config, &hash_iocs, &filename_iocs);
     }
 
     // Finished scan

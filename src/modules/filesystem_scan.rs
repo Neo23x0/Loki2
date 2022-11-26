@@ -12,7 +12,7 @@ use memmap::MmapOptions;
 use walkdir::WalkDir;
 use yara::*;
 
-use crate::{ScanConfig, GenMatch, HashIOC, HashType, ExtVars, YaraMatch};
+use crate::{ScanConfig, GenMatch, HashIOC, HashType, ExtVars, YaraMatch, FilenameIOC};
 
 const REL_EXTS: &'static [&'static str] = &[".exe", ".dll", ".bat", ".ps1", ".asp", ".aspx", ".jsp", ".jspx", 
     ".php", ".plist", ".sh", ".vbs", ".js", ".dmp"];
@@ -45,7 +45,13 @@ struct SampleInfo {
 }
 
 // Scan a given file system path
-pub fn scan_path (target_folder: String, compiled_rules: &Rules, scan_config: &ScanConfig, hash_iocs: &Vec<HashIOC>) -> () {
+pub fn scan_path (
+    target_folder: String, 
+    compiled_rules: &Rules, 
+    scan_config: &ScanConfig, 
+    hash_iocs: &Vec<HashIOC>, 
+    filename_iocs: &Vec<FilenameIOC>) -> () {
+
     // Walk the file system
     let mut it = WalkDir::new(target_folder).into_iter();
     loop {
@@ -140,6 +146,9 @@ pub fn scan_path (target_folder: String, compiled_rules: &Rules, scan_config: &S
         // ------------------------------------------------------------
         // IOC Matching
 
+        // Filename Matching
+        // TODO
+
         // Hash Matching
         // Generate hashes
         let md5_value = format!("{:x}", md5::compute(&mmap));
@@ -213,7 +222,7 @@ pub fn scan_path (target_folder: String, compiled_rules: &Rules, scan_config: &S
         // Scan Results
         if sample_matches.len() > 0 {
             // Calculate a total score
-            let mut total_score: u16 = 0; 
+            let mut total_score: i16 = 0; 
             for sm in sample_matches.iter() {
                 total_score += sm.score;
             }
