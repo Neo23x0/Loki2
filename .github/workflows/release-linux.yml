@@ -1,0 +1,86 @@
+name: Release Build Linux
+
+on:
+  release:
+    types: [published]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+
+    env:
+      CC: musl-gcc
+      TARGET_PREFIX: /usr/x86_64-linux-musl
+      CFLAGS: -static -I/usr/x86_64-linux-musl/include
+      YARA_INCLUDE_DIR: /usr/x86_64-linux-musl/include
+      LIBRARY_PATH: /usr/x86_64-linux-musl/lib
+      PKG_CONFIG_PATH: /usr/x86_64-linux-musl/lib/pkgconfig
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Install Dependencies
+      run: | 
+        sudo apt-get install automake libtool make gcc pkg-config flex bison clang musl-tools linux-libc-dev
+        sudo ln -s /usr/include/x86_64-linux-gnu/asm /usr/include/x86_64-linux-musl/asm
+        sudo ln -s /usr/include/asm-generic /usr/include/x86_64-linux-musl/asm-generic
+        sudo ln -s /usr/include/linux /usr/include/x86_64-linux-musl/linux
+
+    - name: Install OpenSSL Dev
+      run: |
+        wget -nv -O openssl.tar.gz https://www.openssl.org/source/openssl-1.1.1p.tar.gz
+        mkdir openssl && cd openssl && tar --strip=1 -xzf ../openssl.tar.gz
+        ./config --prefix=$TARGET_PREFIX \
+            no-afalgeng \
+            no-async \
+            no-capieng \
+            no-dso \
+            no-shared \
+            no-sock \
+            no-ui
+        make
+        sudo make install_sw
+
+    - name: Install YARA
+      run: |
+        wget -nv -O yara.tar.gz https://github.com/VirusTotal/yara/archive/v4.2.3.tar.gz
+        mkdir yara && cd yara && tar --strip=1 -xzf ../yara.tar.gz
+        ./bootstrap.sh
+        LDFLAGS="$(pkg-config --static --libs libcrypto)" ./configure \
+            --with-crypto \
+            --disable-shared \
+            --prefix=$TARGET_PREFIX
+        make
+        sudo make install
+
+    - name: Add target tool chain
+      run: |
+        rustup target add x86_64-unknown-linux-musl
+
+    - name: Build
+      run: cargo build --target x86_64-unknown-linux-musl --release --verbose
+
+    - name: Build Dist
+      run: make dist
+
+    - name: Archive Release
+      uses: thedoctor0/zip-release@main
+      with:
+        type: 'zip'
+        filename: 'loki.zip'
+        directory: './dist'
+
+    - name: Upload assets
+      id: upload-release-asset 
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ github.event.release.upload_url }}
+        asset_path: ./dist/loki.zip
+        asset_name: loki-${{ runner.os }}.zip
+        asset_content_type: application/zip

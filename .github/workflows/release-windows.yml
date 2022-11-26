@@ -1,0 +1,83 @@
+name: Release Build Windows
+
+on:
+  release:
+    types: [published]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+
+    runs-on: ubuntu-22.04
+
+    env:
+      CC: x86_64-w64-mingw32-gcc
+      WINDRES: x86_64-w64-mingw32-windres
+      SYSTEM: MINGW64
+      TARGET_PREFIX: /usr/x86_64-w64-mingw32
+      PKG_CONFIG_PATH: /usr/x86_64-w64-mingw32/lib/pkgconfig
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Install Dependencies
+      run: | 
+        sudo apt-get install automake libtool make gcc pkg-config flex bison clang mingw-w64 wget git
+
+    - name: Install OpenSSL Dev
+      run: |
+        wget -nv -O openssl.tar.gz https://www.openssl.org/source/openssl-1.1.1p.tar.gz
+        mkdir openssl && cd openssl && tar --strip=1 -xzf ../openssl.tar.gz
+        ./config --prefix=$TARGET_PREFIX \
+            no-afalgeng \
+            no-async \
+            no-capieng \
+            no-dso \
+            no-shared \
+            no-sock \
+            no-ui
+        make
+        sudo make install_sw
+
+    - name: Install YARA
+      run: |
+        wget -nv -O yara.tar.gz https://github.com/VirusTotal/yara/archive/v4.2.3.tar.gz
+        mkdir yara && cd yara && tar --strip=1 -xzf ../yara.tar.gz
+        ./bootstrap.sh
+        LDFLAGS="$(pkg-config --static --libs libcrypto)" CPPFLAGS="-isystem $TARGET_PREFIX/include -D__CRT__NO_INLINE" ./configure \
+            --with-crypto \
+            --disable-shared \
+            --host=x86_64-w64-mingw32 \
+            --prefix=$TARGET_PREFIX
+        make
+        sudo make install
+
+    - name: Add target tool chain
+      run: |
+        rustup target add x86_64-pc-windows-gnu
+
+    - name: Build
+      run: cargo build --target x86_64-pc-windows-gnu --release --verbose
+
+    - name: Build Dist
+      run: make dist
+
+    - name: Archive Release
+      uses: thedoctor0/zip-release@main
+      with:
+        type: 'zip'
+        filename: 'loki.zip'
+        directory: './dist'
+
+    - name: Upload assets
+      id: upload-release-asset 
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ github.event.release.upload_url }}
+        asset_path: ./dist/loki.zip
+        asset_name: loki-${{ runner.os }}.zip
+        asset_content_type: application/zip
