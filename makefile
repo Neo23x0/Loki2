@@ -2,21 +2,26 @@
 # Default make target
 .DEFAULT_GOAL := build
 
-# Loki binary name
+OSFLAG 				:=
 ifeq ($(OS),Windows_NT)
-	BUILD_TARGET:=--target x86_64-pc-windows-gnu
-	LOKI_BINARY:=loki.exe
-else ifeq ($(UNAME), Linux)
-	BUILD_TARGET:=--target x86_64-unknown-linux-musl 
-	LOKI_BINARY:=loki
-else ($(UNAME), Darwin)
-	BUILD_TARGET:=
-	LOKI_BINARY:=loki
+	# LOKI2 can't be built on Windows!
+	# For information on how to build LOKI2 for Windows see the workflow file in .github/workflows/build-linux-to-win.yml
+	exit 1
+else
+	UNAME_S := $(shell uname -s)
+	ifeq ($(UNAME_S),Linux)
+		OSFLAG +=  --target x86_64-unknown-linux-musl 
+	endif
+	ifeq ($(UNAME_S),Darwin)
+		OSFLAG += 
+	endif
 endif
 
 build:
+	@echo [!] The build has a bunch of dependencies
+	@echo [i] For information on how to fulfill these prerequisites see the workflow file in .github/workflows/
 	@echo [+] Building LOKI release version ...
-	cargo build --release $(BUILD_TARGET)
+	cargo build --release $(OSFLAG)
 	@echo [+] Build successful!
 
 dist: build
@@ -25,7 +30,7 @@ dist: build
 	rm -rf ./tmp
 	mkdir -p ./dist/loki/signatures
 	mkdir ./tmp
-	cp target/release/$(LOKI_BINARY) dist/loki/
+	cp target/release/loki dist/loki/
 	@echo [+] Downloading signature-base from Github.com ...
 	wget https://github.com/Neo23x0/signature-base/archive/master.tar.gz -O ./tmp/signature-base.tar.gz
 	tar -xvzf ./tmp/signature-base.tar.gz -C ./tmp
