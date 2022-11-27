@@ -24,13 +24,14 @@ build:
 	cargo build --release $(OSFLAG)
 	@echo [+] Build successful!
 
-dist: build
+dist:
 	@echo [+] Cleaning up temporary and target directories ...
 	rm -rf ./dist
 	rm -rf ./tmp
 	mkdir -p ./dist/loki/signatures
 	mkdir ./tmp
-	cp target/release/loki dist/loki/
+	-cp target/release/loki dist/loki/
+	-cp target/release/loki.exe dist/loki/
 	@echo [+] Downloading signature-base from Github.com ...
 	wget https://github.com/Neo23x0/signature-base/archive/master.tar.gz -O ./tmp/signature-base.tar.gz
 	tar -xvzf ./tmp/signature-base.tar.gz -C ./tmp
