@@ -78,8 +78,16 @@ pub fn scan_path (
             }
         };
         // Skip big files
-        let metadata = entry.path().symlink_metadata().unwrap();
-        let realsize = entry.path().size_on_disk_fast(&metadata).unwrap();
+        let metadata_result = entry.path().symlink_metadata();
+        let metadata = match metadata_result {
+            Ok(metadata) => metadata,
+            Err(e) => { if scan_config.show_access_errors { log::error!("Cannot access file FILE: {:?} ERROR: {:?}", entry.path(), e) }; continue; }
+        };
+        let realsize_result = entry.path().size_on_disk_fast(&metadata);
+        let realsize = match realsize_result {
+            Ok(realsize) => realsize,
+            Err(e) => { if scan_config.show_access_errors { log::error!("Cannot access file FILE: {:?} ERROR: {:?}", entry.path(), e) }; continue; }
+        };
         if realsize > scan_config.max_file_size as u64 { 
             log::trace!("Skipping file due to size FILE: {} SIZE: {} MAX_FILE_SIZE: {}", 
             entry.path().display(), realsize, scan_config.max_file_size);
