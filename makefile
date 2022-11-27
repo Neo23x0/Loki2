@@ -30,8 +30,12 @@ dist:
 	rm -rf ./tmp
 	mkdir -p ./dist/loki/signatures
 	mkdir ./tmp
-	-cp target/release/loki dist/loki/
-	-cp target/release/loki.exe dist/loki/
+	# macOS
+	-cp ./target/release/loki dist/loki/
+	# Linux 
+	-cp ./target/x86_64-unknown-linux-musl/release/loki ./dist/loki/
+	# Windows
+	-cp ./target/x86_64-pc-windows-gnu/release/loki.exe ./dist/loki/
 	@echo [+] Downloading signature-base from Github.com ...
 	wget https://github.com/Neo23x0/signature-base/archive/master.tar.gz -O ./tmp/signature-base.tar.gz
 	tar -xvzf ./tmp/signature-base.tar.gz -C ./tmp
