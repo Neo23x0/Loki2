@@ -1,7 +1,7 @@
 use std::process;
 use arrayvec::ArrayVec;
 use yara::*;
-use sysinfo::{System, SystemExt, ProcessExt, PidExt};
+use sysinfo::{System};
 
 use crate::{ScanConfig, GenMatch};
 
