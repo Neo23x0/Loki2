@@ -26,7 +26,7 @@ pub fn scan_processes(compiled_rules: &Rules, scan_config: &ScanConfig) ->() {
         // Matches (all types)
         let mut proc_matches = ArrayVec::<GenMatch, 100>::new();
         // ------------------------------------------------------------
-        // YARA scanning
+        // YARA scanning via crate
         let yara_matches = compiled_rules.scan_process(pid, 30);
         log::trace!("YARA Scan result for PID: {} PROC_NAME: {} RESULT: {:?}", pid, proc_name, yara_matches);
         match &yara_matches {
