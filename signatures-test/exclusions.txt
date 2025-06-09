@@ -1,0 +1,21 @@
+# Custom exclusion patterns (regex)
+# Lines starting with # are comments
+
+# Exclude system directories
+^/proc/.*
+^/sys/.*
+^/dev/.*
+^C:\\Windows\\System32\\.*
+^C:\\Program Files\\.*
+
+# Exclude temporary directories
+.*\\Temp\\.*
+.*/tmp/.*
+
+# Exclude log files
+.*\.log$
+.*\.tmp$
+
+# Exclude backup files
+.*\.bak$
+.*\.backup$
