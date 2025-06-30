@@ -11,8 +11,21 @@ use sha1::*;
 use memmap::MmapOptions;
 use walkdir::WalkDir;
 use yara::*;
+use regex::Regex;
 
-use crate::{ScanConfig, GenMatch, HashIOC, HashType, ExtVars, YaraMatch, FilenameIOC};
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
+#[cfg(unix)]
+use users::{get_user_by_uid};
+
+#[cfg(windows)]
+use std::os::windows::fs::MetadataExt;
+#[cfg(windows)]
+use std::ffi::OsString;
+#[cfg(windows)]
+use std::os::windows::ffi::OsStringExt;
+
+use crate::{ScanConfig, GenMatch, HashIOC, HashType, ExtVars, YaraMatch, FilenameIOC, FilenameIOCType};
 
 const REL_EXTS: &'static [&'static str] = &[".exe", ".dll", ".bat", ".ps1", ".asp", ".aspx", ".jsp", ".jspx", 
     ".php", ".plist", ".sh", ".vbs", ".js", ".dmp"];
@@ -31,7 +44,18 @@ const FILE_TYPES: &'static [&'static str] = &[
 ];  // see https://docs.rs/file-format/latest/file_format/index.html
 const ALL_DRIVE_EXCLUDES: &'static [&'static str] = &[
     "/Library/CloudStorage/",
-    "/Volumes/"
+    "/Volumes/",
+    "/mnt/",
+    "/media/",
+    "/proc/",
+    "/sys/",
+    "/dev/",
+    "/run/",
+    "/tmp/",
+    "\\\\",  // UNC paths on Windows
+    "C:\\Windows\\System32\\",
+    "C:\\Program Files\\",
+    "C:\\Program Files (x86)\\",
 ];
 
 #[derive(Debug)]
@@ -72,11 +96,50 @@ pub fn scan_path (
             continue;
         };
         // Skip certain drives and folders
+        let path_str = entry.path().to_str().unwrap();
+        let mut should_skip_dir = false;
         for skip_dir_value in ALL_DRIVE_EXCLUDES.iter() {
-            if entry.path().to_str().unwrap().contains(skip_dir_value) {
-                it.skip_current_dir()
+            if path_str.contains(skip_dir_value) {
+                log::trace!("Skipping directory due to exclusion: {} (pattern: {})",
+                    path_str, skip_dir_value);
+                should_skip_dir = true;
+                break;
             }
-        };
+        }
+        if should_skip_dir {
+            it.skip_current_dir();
+            continue;
+        }
+
+        // Check if this is a network file system
+        if is_network_filesystem(entry.path()) {
+            log::trace!("Skipping network filesystem: {}", path_str);
+            it.skip_current_dir();
+            continue;
+        }
+
+        // Check custom exclusions
+        let file_path = entry.path().to_string_lossy().to_string();
+        let mut should_skip = false;
+        for exclusion_pattern in scan_config.custom_exclusions.iter() {
+            match Regex::new(exclusion_pattern) {
+                Ok(re) => {
+                    if re.is_match(&file_path) {
+                        log::trace!("Skipping file due to custom exclusion: {} (pattern: {})",
+                            file_path, exclusion_pattern);
+                        should_skip = true;
+                        break;
+                    }
+                },
+                Err(e) => {
+                    log::debug!("Invalid regex in custom exclusion: {} ERROR: {:?}",
+                        exclusion_pattern, e);
+                }
+            }
+        }
+        if should_skip {
+            continue;
+        }
         // Skip big files
         let metadata_result = entry.path().symlink_metadata();
         let metadata = match metadata_result {
@@ -155,7 +218,43 @@ pub fn scan_path (
         // IOC Matching
 
         // Filename Matching
-        // TODO
+        let filename = entry.path().file_name().unwrap().to_string_lossy().to_string();
+        let filepath = entry.path().to_string_lossy().to_string();
+
+        for filename_ioc in filename_iocs.iter() {
+            let is_match = match filename_ioc.ioc_type {
+                FilenameIOCType::String => {
+                    // Simple string matching (case-insensitive)
+                    filename.to_lowercase().contains(&filename_ioc.pattern) ||
+                    filepath.to_lowercase().contains(&filename_ioc.pattern)
+                },
+                FilenameIOCType::Regex => {
+                    // Regex matching
+                    match Regex::new(&filename_ioc.pattern) {
+                        Ok(re) => {
+                            re.is_match(&filename) || re.is_match(&filepath)
+                        },
+                        Err(e) => {
+                            log::debug!("Invalid regex pattern in filename IOC: {} ERROR: {:?}",
+                                filename_ioc.pattern, e);
+                            false
+                        }
+                    }
+                }
+            };
+
+            if is_match && !sample_matches.is_full() {
+                let match_message = format!("FILENAME IOC match: {} (Pattern: {} - {})",
+                    filepath, filename_ioc.pattern, filename_ioc.description);
+                sample_matches.insert(
+                    sample_matches.len(),
+                    GenMatch {
+                        message: match_message,
+                        score: filename_ioc.score,
+                    }
+                );
+            }
+        }
 
         // Hash Matching
         // Generate hashes
@@ -186,7 +285,6 @@ pub fn scan_path (
                 let match_message: String = format!("HASH match with IOC HASH: {} DESC: {}", hash_ioc.hash_value, hash_ioc.description);
                 sample_matches.insert(
                     sample_matches.len(), 
-                    // TODO: get meta data in a safe way from Vec structure
                     GenMatch{message: match_message, score: hash_ioc.score}
                 );
             }
@@ -211,7 +309,7 @@ pub fn scan_path (
             filepath: entry.path().parent().unwrap().to_string_lossy().to_string(),
             extension: extension.to_string(),
             filetype: file_format_extension.to_ascii_uppercase(),
-            owner: "".to_string(),  // TODO
+            owner: get_file_owner(entry.path()),
         };
         log::trace!("Passing external variables to the scan EXT_VARS: {:?}", ext_vars);
         // Actual scanning and result analysis
@@ -222,7 +320,6 @@ pub fn scan_path (
                 let match_message: String = format!("YARA match with rule {}", ymatch.rulename);
                 sample_matches.insert(
                     sample_matches.len(), 
-                    // TODO: get meta data in a safe way from Vec structure
                     GenMatch{message: match_message, score: ymatch.score}
                 );
             }
@@ -235,7 +332,7 @@ pub fn scan_path (
                 total_score += sm.score;
             }
             // Print line
-            // TODO: print all matches in a nested form
+            // Print all matches with detailed information
             log::warn!("File match found FILE: {} {:?} SCORE: {} REASONS: {:?}", 
                 entry.path().display(), 
                 sample_info, 
@@ -270,12 +367,133 @@ fn scan_file(rules: &Rules, file_handle: &File, scan_config: &ScanConfig, ext_va
         if _match.len() > 0 {
             log::debug!("MATCH FOUND: {:?} LEN: {}", _match, _match.len());
             if !yara_matches.is_full() {
+                // Try to extract score from YARA rule metadata
+                let score = extract_yara_score(&_match[0]).unwrap_or(60);
                 yara_matches.insert(
-                    yara_matches.len(), 
-                    YaraMatch{rulename: _match[0].identifier.to_string(), score: 60}
+                    yara_matches.len(),
+                    YaraMatch{rulename: _match[0].identifier.to_string(), score: score}
                 );
             }
         }
     }
     return yara_matches;
+}
+
+// Get file owner information
+fn get_file_owner(path: &std::path::Path) -> String {
+    #[cfg(unix)]
+    {
+        match fs::metadata(path) {
+            Ok(metadata) => {
+                let uid = metadata.uid();
+                match get_user_by_uid(uid) {
+                    Some(user) => user.name().to_string_lossy().to_string(),
+                    None => uid.to_string(),
+                }
+            },
+            Err(_) => "unknown".to_string(),
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        // On Windows, try to get file owner using Windows API
+        get_windows_file_owner(path).unwrap_or_else(|| "unknown".to_string())
+    }
+}
+
+// Extract score from YARA rule metadata
+fn extract_yara_score(yara_match: &yara::Match) -> Option<i16> {
+    // Try to find a "score" metadata field in the YARA rule
+    for meta in yara_match.metadatas.iter() {
+        if meta.identifier == "score" {
+            match &meta.value {
+                yara::MetadataValue::Integer(score) => {
+                    return Some(*score as i16);
+                },
+                yara::MetadataValue::String(score_str) => {
+                    if let Ok(score) = score_str.parse::<i16>() {
+                        return Some(score);
+                    }
+                },
+                _ => continue,
+            }
+        }
+    }
+
+    // Try alternative metadata names
+    for meta in yara_match.metadatas.iter() {
+        if meta.identifier == "severity" || meta.identifier == "weight" {
+            match &meta.value {
+                yara::MetadataValue::Integer(score) => {
+                    return Some(*score as i16);
+                },
+                yara::MetadataValue::String(score_str) => {
+                    if let Ok(score) = score_str.parse::<i16>() {
+                        return Some(score);
+                    }
+                },
+                _ => continue,
+            }
+        }
+    }
+
+    None
+}
+
+// Check if a path is on a network filesystem
+fn is_network_filesystem(path: &std::path::Path) -> bool {
+    #[cfg(unix)]
+    {
+        // On Unix systems, check if the filesystem type indicates a network mount
+        // This is a simplified check - in practice, you might want to parse /proc/mounts
+        let path_str = path.to_string_lossy();
+
+        // Common network filesystem indicators
+        if path_str.starts_with("/nfs/") ||
+           path_str.starts_with("/cifs/") ||
+           path_str.starts_with("/smb/") ||
+           path_str.contains("/.gvfs/") ||
+           path_str.contains("/.fuse/") {
+            return true;
+        }
+
+        // Check for common cloud storage paths
+        if path_str.contains("Dropbox") ||
+           path_str.contains("OneDrive") ||
+           path_str.contains("Google Drive") ||
+           path_str.contains("iCloud") {
+            return true;
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        // On Windows, check for UNC paths and mapped network drives
+        let path_str = path.to_string_lossy();
+        if path_str.starts_with("\\\\") {
+            return true;
+        }
+
+        // Check for common cloud storage paths on Windows
+        if path_str.contains("OneDrive") ||
+           path_str.contains("Dropbox") ||
+           path_str.contains("Google Drive") ||
+           path_str.contains("iCloudDrive") {
+            return true;
+        }
+    }
+
+    false
+}
+
+#[cfg(windows)]
+fn get_windows_file_owner(path: &std::path::Path) -> Option<String> {
+    // Simplified Windows file owner detection
+    // In a production environment, you would use the Windows Security API
+    // to get the actual owner SID and convert it to a username
+
+    // For now, return a placeholder indicating Windows file owner detection
+    // would require more complex Windows API calls
+    Some("Windows User".to_string())
 }

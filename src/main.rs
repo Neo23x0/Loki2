@@ -12,19 +12,37 @@ use yara::*;
 use crate::helpers::helpers::{get_hostname, get_os_type, evaluate_env};
 use crate::modules::process_check::scan_processes;
 use crate::modules::filesystem_scan::scan_path;
+use crate::modules::network_check::scan_network_connections;
 
 // Specific TODOs
 // - skipping non-local file systems like network mounts or cloudfs drives
 
 // General TODOs
-// - better error handling
-// - putting all modules in an array and looping over that list instead of a fixed sequence
-// - restructuring project to multiple files
+// - better error handling (partially implemented)
+// - putting all modules in an array and looping over that list instead of a fixed sequence (implemented)
+// - restructuring project to multiple files (implemented)
 
 const VERSION: &str = "2.0.1-alpha";
 
 const SIGNATURE_SOURCE: &str = "./signatures";
-const MODULES: &'static [&'static str] = &["FileScan", "ProcessCheck"];
+const MODULES: &'static [&'static str] = &["FileScan", "ProcessCheck", "NetworkCheck"];
+
+#[derive(Debug)]
+pub struct ModuleConfig {
+    pub name: String,
+    pub enabled: bool,
+    pub description: String,
+}
+
+impl ModuleConfig {
+    fn new(name: &str, description: &str) -> Self {
+        ModuleConfig {
+            name: name.to_string(),
+            enabled: true,
+            description: description.to_string(),
+        }
+    }
+}
 
 #[derive(Debug)]
 pub struct GenMatch {
@@ -41,6 +59,7 @@ pub struct ScanConfig {
     max_file_size: usize,
     show_access_errors: bool,
     scan_all_types: bool,
+    custom_exclusions: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -82,14 +101,34 @@ pub enum FilenameIOCType {
     Regex
 }
 
-// TODO: under construction - the data structure to hold the IOCs is still limited to 100.000 elements. 
-//       I have to find a data structure that allows to store an unknown number of entries.
-// Initialize the IOCs
+#[derive(Debug)]
+pub struct C2IOC {
+    pattern: String,
+    ioc_type: C2IOCType,
+    description: String,
+    score: i16,
+}
+
+#[derive(Debug)]
+pub enum C2IOCType {
+    IP,
+    FQDN,
+}
+
+// Initialize the hash IOCs
+// Using Vec instead of ArrayVec to allow unlimited IOC entries
 fn initialize_hash_iocs() -> Vec<HashIOC> {
     // Compose the location of the hash IOC file
     let hash_ioc_file = format!("{}/iocs/hash-iocs.txt", SIGNATURE_SOURCE);
     // Read the hash IOC file
-    let hash_iocs_string = fs::read_to_string(hash_ioc_file).expect("Unable to read hash IOC file (use --debug for more information)");
+    let hash_iocs_string = match fs::read_to_string(&hash_ioc_file) {
+        Ok(content) => content,
+        Err(e) => {
+            log::error!("Unable to read hash IOC file: {} - Error: {}", hash_ioc_file, e);
+            log::info!("Continuing without hash IOCs...");
+            return Vec::new();
+        }
+    };
     // Configure the CSV reader
     let mut reader = ReaderBuilder::new()
         .delimiter(b';')
@@ -116,7 +155,7 @@ fn initialize_hash_iocs() -> Vec<HashIOC> {
                         hash_type: hash_type,
                         hash_value: record[0].to_ascii_lowercase(), 
                         description: record[1].to_string(), 
-                        score: 100,  // TODO 
+                        score: 100,  // Default score for hash IOCs
                     });
             }
         }
@@ -141,7 +180,14 @@ fn initialize_filename_iocs() -> Vec<FilenameIOC> {
     // Compose the location of the hash IOC file
     let filename_ioc_file = format!("{}/iocs/filename-iocs.txt", SIGNATURE_SOURCE);
     // Read the hash IOC file
-    let filename_iocs_string = fs::read_to_string(filename_ioc_file).expect("Unable to read filename IOC file (use --debug for more information)");
+    let filename_iocs_string = match fs::read_to_string(&filename_ioc_file) {
+        Ok(content) => content,
+        Err(e) => {
+            log::error!("Unable to read filename IOC file: {} - Error: {}", filename_ioc_file, e);
+            log::info!("Continuing without filename IOCs...");
+            return Vec::new();
+        }
+    };
     // Vector that holds the hashes
     let mut filename_iocs:Vec<FilenameIOC> = Vec::new();
     // Configure the CSV reader
@@ -181,7 +227,7 @@ fn initialize_filename_iocs() -> Vec<FilenameIOC> {
                         pattern: record[0].to_ascii_lowercase(),
                         ioc_type: filename_ioc_type,
                         description: description.clone(), 
-                        score: record[1].parse::<i16>().unwrap(),  // TODO 
+                        score: record[1].parse::<i16>().unwrap_or(50),  // Default to 50 if parsing fails
                     });
             }
         }
@@ -193,10 +239,122 @@ fn initialize_filename_iocs() -> Vec<FilenameIOC> {
 }
 
 fn get_filename_ioc_type(filename_ioc_value: &str) -> FilenameIOCType {
-    // TODO ... detect filename IOC type
-    // currently every filename gets detected and initialized as regex (which consumes a lot of memory)
-    return FilenameIOCType::Regex;
-} 
+    // Check if the pattern contains regex metacharacters
+    let regex_chars = ['*', '?', '[', ']', '(', ')', '{', '}', '^', '$', '|', '+', '\\', '.'];
+
+    for ch in filename_ioc_value.chars() {
+        if regex_chars.contains(&ch) {
+            return FilenameIOCType::Regex;
+        }
+    }
+
+    // If no regex metacharacters found, treat as simple string
+    return FilenameIOCType::String;
+}
+
+// Initialize C2 IOCs (IP addresses and FQDNs)
+fn initialize_c2_iocs() -> Vec<C2IOC> {
+    // Compose the location of the C2 IOC file
+    let c2_ioc_file = format!("{}/iocs/c2-iocs.txt", SIGNATURE_SOURCE);
+
+    // Try to read the C2 IOC file, return empty vector if file doesn't exist
+    let c2_iocs_string = match fs::read_to_string(&c2_ioc_file) {
+        Ok(content) => content,
+        Err(_) => {
+            log::debug!("C2 IOC file not found: {}", c2_ioc_file);
+            return Vec::new();
+        }
+    };
+
+    // Configure the CSV reader
+    let mut reader = ReaderBuilder::new()
+        .delimiter(b';')
+        .flexible(true)
+        .from_reader(c2_iocs_string.as_bytes());
+
+    // Vector that holds the C2 IOCs
+    let mut c2_iocs: Vec<C2IOC> = Vec::new();
+
+    // Preset description
+    let mut description = "N/A".to_string();
+
+    // Read the lines from the CSV file
+    for result in reader.records() {
+        let record_result = result;
+        let record = match record_result {
+            Ok(r) => r,
+            Err(e) => {
+                log::debug!("Cannot read line in C2 IOCs file (which can be okay) ERROR: {:?}", e);
+                continue;
+            }
+        };
+
+        // If line couldn't be split up (no separator)
+        if record.len() == 1 {
+            // If line starts with # ... this is a description
+            if record[0].starts_with("# ") {
+                description = record[0].strip_prefix("# ").unwrap().to_string();
+            } else if record[0].starts_with("#") {
+                description = record[0].strip_prefix("#").unwrap().to_string();
+            }
+        }
+
+        // If more than two elements have been found
+        if record.len() > 1 {
+            // if it's not a comment line
+            if !record[0].starts_with("#") {
+                // determining C2 IOC type
+                let c2_ioc_type = get_c2_ioc_type(&record[0]);
+                log::trace!("Read C2 IOC PATTERN: {} TYPE: {:?} SCORE: {}", &record[0], c2_ioc_type, &record[1]);
+                c2_iocs.push(
+                    C2IOC {
+                        pattern: record[0].to_ascii_lowercase(),
+                        ioc_type: c2_ioc_type,
+                        description: description.clone(),
+                        score: record[1].parse::<i16>().unwrap_or(75),
+                    });
+            }
+        }
+    }
+
+    log::info!("Successfully initialized {} C2 IOC values", c2_iocs.len());
+    return c2_iocs;
+}
+
+fn get_c2_ioc_type(c2_ioc_value: &str) -> C2IOCType {
+    // Simple heuristic: if it contains only digits, dots, and colons, it's likely an IP
+    // Otherwise, treat as FQDN
+    let ip_chars: Vec<char> = c2_ioc_value.chars().collect();
+    let is_ip_like = ip_chars.iter().all(|&c| c.is_ascii_digit() || c == '.' || c == ':');
+
+    if is_ip_like && (c2_ioc_value.contains('.') || c2_ioc_value.contains(':')) {
+        C2IOCType::IP
+    } else {
+        C2IOCType::FQDN
+    }
+}
+
+// Load custom exclusions from file
+fn load_custom_exclusions() -> Vec<String> {
+    let exclusions_file = format!("{}/exclusions.txt", SIGNATURE_SOURCE);
+
+    match fs::read_to_string(&exclusions_file) {
+        Ok(content) => {
+            let exclusions: Vec<String> = content
+                .lines()
+                .filter(|line| !line.trim().is_empty() && !line.starts_with("#"))
+                .map(|line| line.trim().to_string())
+                .collect();
+
+            log::info!("Loaded {} custom exclusion patterns", exclusions.len());
+            exclusions
+        },
+        Err(_) => {
+            log::debug!("Custom exclusions file not found: {}", exclusions_file);
+            Vec::new()
+        }
+    }
+}
 
 // Initialize the rule files
 fn initialize_yara_rules() -> Rules {
@@ -326,13 +484,18 @@ fn main() {
         opt trace:bool, desc:"Show very verbose trace output";
         opt noprocs:bool, desc:"Don't scan processes";
         opt nofs:bool, desc:"Don't scan the file system";
+        opt nonet:bool, desc:"Don't scan network connections";
         opt folder:Option<String>, desc:"Folder to scan"; // an optional (positional) parameter
     }.parse_or_exit();
+    // Load custom exclusions from file if it exists
+    let custom_exclusions = load_custom_exclusions();
+
     // Create a config
     let scan_config = ScanConfig {
         max_file_size: args.max_file_size,
         show_access_errors: args.show_access_errors,
         scan_all_types: args.scan_all_files,
+        custom_exclusions: custom_exclusions,
     };
 
     // Logger
@@ -357,14 +520,21 @@ fn main() {
     // Print platform & environment information
     evaluate_env();
 
-    // Evaluate active modules
-    let mut active_modules: ArrayVec<String, 20> = ArrayVec::<String, 20>::new();
-    for module in MODULES {
-        if args.noprocs && module.to_string() == "ProcessCheck" { continue; }
-        if args.nofs && module.to_string() == "FileScan" { continue; }
-        active_modules.insert(active_modules.len(), module.to_string());
+    // Initialize and configure modules
+    let mut module_configs = Vec::new();
+    module_configs.push(ModuleConfig::new("FileScan", "File system scanning with YARA and IOC matching"));
+    module_configs.push(ModuleConfig::new("ProcessCheck", "Process memory scanning with YARA rules"));
+    module_configs.push(ModuleConfig::new("NetworkCheck", "Network connection analysis for C2 IOCs"));
+
+    // Apply command line flags to disable modules
+    for module in &mut module_configs {
+        if args.noprocs && module.name == "ProcessCheck" { module.enabled = false; }
+        if args.nofs && module.name == "FileScan" { module.enabled = false; }
+        if args.nonet && module.name == "NetworkCheck" { module.enabled = false; }
     }
-    log::info!("Active modules MODULES: {:?}", active_modules);
+
+    let active_modules: Vec<&ModuleConfig> = module_configs.iter().filter(|m| m.enabled).collect();
+    log::info!("Active modules: {:?}", active_modules.iter().map(|m| &m.name).collect::<Vec<_>>());
 
     // Set some default values
     // default target folder
@@ -375,28 +545,64 @@ fn main() {
         target_folder = args_target_folder;
     }
     
-    // Initialize IOCs 
+    // Initialize IOCs
     log::info!("Initialize hash IOCs ...");
     let hash_iocs = initialize_hash_iocs();
     log::info!("Initialize filename IOCs ...");
     let filename_iocs = initialize_filename_iocs();
+    log::info!("Initialize C2 IOCs ...");
+    let c2_iocs = initialize_c2_iocs();
 
     // Initialize the YARA rules
     log::info!("Initializing YARA rules ...");
     let compiled_rules = initialize_yara_rules();
 
-    // Process scan
-    if active_modules.contains(&"ProcessCheck".to_owned()) {
-        log::info!("Scanning running processes ... ");
-        scan_processes(&compiled_rules, &scan_config);
+    // Execute active modules
+    for module in &active_modules {
+        match module.name.as_str() {
+            "ProcessCheck" => {
+                log::info!("Scanning running processes ... ");
+                scan_processes(&compiled_rules, &scan_config);
+            },
+            "FileScan" => {
+                log::info!("Scanning local file system ... ");
+                scan_path(target_folder.clone(), &compiled_rules, &scan_config, &hash_iocs, &filename_iocs);
+            },
+            "NetworkCheck" => {
+                log::info!("Scanning network connections ... ");
+                scan_network_connections(&c2_iocs, &scan_config);
+            },
+            _ => {
+                log::warn!("Unknown module: {}", module.name);
+            }
+        }
     }
 
-    // File system scan
-    if active_modules.contains(&"FileScan".to_owned()) {
-        log::info!("Scanning local file system ... ");
-        scan_path(target_folder, &compiled_rules, &scan_config, &hash_iocs, &filename_iocs);
-    }
+    // Print scan summary
+    print_scan_summary(&active_modules, &hash_iocs, &filename_iocs, &c2_iocs);
 
     // Finished scan
     log::info!("LOKI scan finished");
+}
+
+// Print scan summary
+fn print_scan_summary(
+    active_modules: &Vec<&ModuleConfig>,
+    hash_iocs: &Vec<HashIOC>,
+    filename_iocs: &Vec<FilenameIOC>,
+    c2_iocs: &Vec<C2IOC>
+) {
+    println!("------------------------------------------------------------------------");
+    println!("SCAN SUMMARY");
+    println!("------------------------------------------------------------------------");
+    println!("Modules executed: {}", active_modules.len());
+    for module in active_modules {
+        println!("  - {} ({})", module.name, module.description);
+    }
+    println!();
+    println!("IOCs loaded:");
+    println!("  - Hash IOCs: {}", hash_iocs.len());
+    println!("  - Filename IOCs: {}", filename_iocs.len());
+    println!("  - C2 IOCs: {}", c2_iocs.len());
+    println!("------------------------------------------------------------------------");
 }

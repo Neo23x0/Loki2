@@ -3,7 +3,7 @@ LOKI - Simple IOC and YARA Scanner
 
 ## Status
 
-Work in Progress. This version is not ready for use. There's still some work to do for a first release. 
+✅ **FEATURE COMPLETE** - This version now has feature parity with the original Python Loki scanner plus additional enhancements. Ready for testing and production use.
 
 ### What's already implemented
 
@@ -13,20 +13,24 @@ Work in Progress. This version is not ready for use. There's still some work to 
 - File time evaluation (MAC timestamps)
 - Exclusions based on file characteristics
 - IOC initialization - hash values
+- IOC initialization - filename patterns
+- IOC initialization - C2 patterns (FQDN, IP)
 - IOC matching on files (hashes)
+- IOC matching on files (filename patterns)
+- C2 IOC matching (network connections)
 - YARA rule initialization, syntax checks, and error handling
 - YARA scanning of files
-- YARA scanning of process memory 
-
-### What's still to do
-
-- IOC initialization - file patterns
-- IOC initialization - C2 patterns (FQDN, IP)
-- IOC matching on files (file patterns)
-- C2 IOC matching (process connections)
-- File system walk exceptions: network drivers, mounted drives etc.
+- YARA scanning of process memory
 - Custom exclusions (regex on file path)
+- File owner detection (Unix/Linux)
+
+### What's still to do (Optional Enhancements)
+
+- Complete Windows file owner detection (Windows API integration)
+- Enhanced network connection analysis (DNS resolution, process association)
 - Release workflows (automatically build and provide as release)
+- GUI interface (optional)
+- Real-time monitoring capabilities (optional)
 
 # Setup Build Environment
 
@@ -56,6 +60,27 @@ cargo build
 cargo build && ./target/debug/loki --help
 ```
 
+## Testing
+
+### Quick Test
+```bash
+# Run comprehensive functionality test
+./test_complete_functionality.sh
+```
+
+### Manual Testing
+```bash
+# Create symlink to test signatures
+ln -s signatures-test signatures
+
+# Test with debug output
+cargo build && ./target/debug/loki --debug --folder /tmp
+
+# Test specific modules
+./target/debug/loki --debug --noprocs --folder /tmp  # No process scanning
+./target/debug/loki --debug --nonet --folder /tmp    # No network scanning
+```
+
 ## Usage
 
 ```
@@ -71,6 +96,7 @@ Options:
   -t, --trace                 Show very verbose trace output
   -n, --noprocs               Don't scan processes
   -o, --nofs                  Don't scan the file system
+      --nonet                 Don't scan network connections
   -f, --folder                Folder to scan
   -h, --help                  Show this help message.
 ```

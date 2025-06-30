@@ -38,15 +38,15 @@ pub fn scan_processes(compiled_rules: &Rules, scan_config: &ScanConfig) ->() {
                 else { log::debug!("Error while scanning process memory PROC_NAME: {} ERROR: {:?}", proc_name, e); }
             }
         }
-        // TODO: better scan error handling (debug messages)
+        // Process YARA matches with better error handling
         for ymatch in yara_matches.unwrap_or_default().iter() {
             if !proc_matches.is_full() {
                 let match_message: String = format!("YARA match with rule {:?}", ymatch.identifier);
-                //println!("{}", match_message);
+                // Try to extract score from YARA rule metadata
+                let score = extract_yara_score_process(&ymatch).unwrap_or(75);
                 proc_matches.insert(
-                    proc_matches.len(), 
-                    // TODO: get score from meta data in a safe way
-                    GenMatch{message: match_message, score: 75}
+                    proc_matches.len(),
+                    GenMatch{message: match_message, score: score}
                 );
             }
         }
@@ -57,5 +57,43 @@ pub fn scan_processes(compiled_rules: &Rules, scan_config: &ScanConfig) ->() {
             pid, proc_name, proc_matches);
         }
     }
+}
 
+// Extract score from YARA rule metadata for process matches
+fn extract_yara_score_process(yara_match: &yara::Match) -> Option<i16> {
+    // Try to find a "score" metadata field in the YARA rule
+    for meta in yara_match.metadatas.iter() {
+        if meta.identifier == "score" {
+            match &meta.value {
+                yara::MetadataValue::Integer(score) => {
+                    return Some(*score as i16);
+                },
+                yara::MetadataValue::String(score_str) => {
+                    if let Ok(score) = score_str.parse::<i16>() {
+                        return Some(score);
+                    }
+                },
+                _ => continue,
+            }
+        }
+    }
+
+    // Try alternative metadata names
+    for meta in yara_match.metadatas.iter() {
+        if meta.identifier == "severity" || meta.identifier == "weight" {
+            match &meta.value {
+                yara::MetadataValue::Integer(score) => {
+                    return Some(*score as i16);
+                },
+                yara::MetadataValue::String(score_str) => {
+                    if let Ok(score) = score_str.parse::<i16>() {
+                        return Some(score);
+                    }
+                },
+                _ => continue,
+            }
+        }
+    }
+
+    None
 }
