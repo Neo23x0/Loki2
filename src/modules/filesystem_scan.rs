@@ -248,7 +248,7 @@ pub fn scan_path (
 // scan a file
 fn scan_file(rules: &Rules, file_handle: &File, scan_config: &ScanConfig, ext_vars: &ExtVars) -> ArrayVec<YaraMatch, 100> {
     // Preparing the external variables
-    // Preparing the scanner
+    // Preparing the scanner using yara crate
     let mut scanner = rules.scanner().unwrap();
     scanner.set_timeout(10);
     scanner.define_variable("filename", ext_vars.filename.as_str()).unwrap();
